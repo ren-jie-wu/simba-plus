@@ -45,8 +45,8 @@ def run(
     edgetype_specific_std=True,
     edgetype_specific_bias=True,
     nonneg=False,
-    gene_adata=None,
-    peak_adata=None,
+    adata_CG=None,
+    adata_CP=None,
     get_adata: str = False,
     pos_scale: bool = False,
 ):
@@ -67,11 +67,11 @@ def run(
     data = simba_plus.load_data.load_from_path(data_path)
     print(f"{data['cell'].x.device}: {data}")
     dim_u = hidden_dims
-    num_neg_samples_fold = 10
+    num_neg_samples_fold = 1
 
     if get_adata:
         logger.info("With `--get-adata` flag, only getting adata output from the last checkpoint...")
-        save_files(f"{prefix}{run_id}", cell_adata=gene_adata, peak_adata=peak_adata)
+        save_files(f"{prefix}{run_id}", cell_adata=adata_CG, peak_adata=adata_CP)
         return
 
 
@@ -91,9 +91,29 @@ def run(
     torch.manual_seed(2025)
     for edge_type in edge_types:
         num_edges = data[edge_type].num_edges
+        edge_index = data[edge_type].edge_index
+        src_nodes = edge_index[0]
+        dst_nodes = edge_index[1]
+
+        # Find indices that cover all source and target nodes
+        selected_indices = set()
+
         indices = torch.arange(num_edges)[torch.randperm(num_edges)]
-        train_index = indices[: int(num_edges * 0.9)]
-        val_index = indices[int(num_edges * 0.9) : int(num_edges * 0.95)]
+        print("Selecting source node")
+        selected_indices.update(np.unique(src_nodes[indices].numpy(), return_index=True)[1].tolist())
+        print("Selecting destination node")
+        selected_indices.update(np.unique(dst_nodes[indices].numpy(), return_index=True)[1].tolist())
+        print("Selected indices")
+
+        # Fill up to 90% for train, 5% for val
+        remaining_indices = [i for i in indices.numpy() if i not in selected_indices]
+        print("Got remaining indices")
+        train_size = int(num_edges * 0.9)
+        val_size = int(num_edges * 0.05)
+        selected_indices = list(selected_indices)
+        train_index = torch.tensor(selected_indices + remaining_indices[:train_size - len(selected_indices)])
+        val_index = torch.tensor(remaining_indices[(train_size - len(selected_indices)):(train_size - len(selected_indices) + val_size)])
+
         train_data_dict[edge_type] = CustomIndexDataset(edge_type, train_index)
         val_data_dict[edge_type] = CustomIndexDataset(edge_type, val_index)
 
@@ -124,32 +144,48 @@ def run(
         node_type: torch.ones(x.shape[0], device=device)
         for (node_type, x) in data.x_dict.items()
     }
-    for train_loader in train_loaders:
-        for batch in tqdm(train_loader):
-            edge_type, label_index = batch
-            edge_type = tuple(edge_type)
-            batch = data.edge_subgraph({edge_type: label_index}).to(device)
-            src, _, dst = edge_type
-            (
-                neg_src_idx,
-                neg_dst_idx,
-            ) = negative_sampling(
-                batch[edge_type].edge_index,
-                num_nodes=(batch[src].num_nodes, batch[dst].num_nodes),
-                num_neg_samples_fold=num_neg_samples_fold,
-            )
-            node_counts_dict[src][
-                batch[src].n_id[
-                    torch.cat([batch[edge_type].edge_index[0], neg_src_idx])
-                ]
-            ] += 1
-            node_counts_dict[dst][
-                batch[dst].n_id[
-                    torch.cat([batch[edge_type].edge_index[1], neg_dst_idx])
-                ]
-            ] += 1
 
-    node_weights_dict = {k: 1.0 / v for k, v in node_counts_dict.items()}
+    # Try to load previously saved node weights so training can resume with same reweighting
+    node_weights_path = os.path.join(checkpoint_dir, "node_weights_dict.pt")
+    if os.path.exists(node_weights_path):
+        try:
+            loaded = torch.load(node_weights_path, map_location="cpu")
+            # Convert loaded values to device tensors if needed
+            node_weights_dict = {
+                k: (v.to(device) if isinstance(v, torch.Tensor) else torch.tensor(v, device=device))
+                for k, v in loaded.items()
+            }
+            print(f"Loaded node_weights_dict from {node_weights_path}")
+        except Exception as e:  # pragma: no cover - best-effort load
+            print(f"Failed to load node_weights_dict from {node_weights_path}: {e}")
+    else:
+        for train_loader in train_loaders:
+            for batch in tqdm(train_loader):
+                edge_type, label_index = batch
+                edge_type = tuple(edge_type)
+                batch = data.edge_subgraph({edge_type: label_index}).to(device)
+                src, _, dst = edge_type
+                (
+                    neg_src_idx,
+                    neg_dst_idx,
+                ) = negative_sampling(
+                    batch[edge_type].edge_index,
+                    num_nodes=(batch[src].num_nodes, batch[dst].num_nodes),
+                    num_neg_samples_fold=num_neg_samples_fold,
+                )
+                node_counts_dict[src][
+                    batch[src].n_id[
+                        torch.cat([batch[edge_type].edge_index[0], neg_src_idx])
+                    ]
+                ] += 1
+                node_counts_dict[dst][
+                    batch[dst].n_id[
+                        torch.cat([batch[edge_type].edge_index[1], neg_dst_idx])
+                    ]
+                ] += 1
+
+        node_weights_dict = {k: 1.0 / v for k, v in node_counts_dict.items()}
+        torch.save(node_weights_dict, node_weights_path)
 
     class MyDataModule(L.LightningDataModule):
         def __init__(self):
@@ -192,7 +228,7 @@ def run(
         )
     else:
         hsic = None
-
+    train_edge_index_dict = {"__".join(edge_type):train_data_dict[edge_type].index for edge_type in edge_types}
     rpvgae = LightningProxModel(
         data,
         encoder_class=TransEncoder,
@@ -214,6 +250,7 @@ def run(
         node_weights_dict=node_weights_dict,
         nonneg=nonneg,
         positive_scale=pos_scale,
+        train_data_dict = train_edge_index_dict,
     ).to(device)
 
     def train(
@@ -301,7 +338,7 @@ def run(
         run_id=run_id,
     )
     torch.save(rpvgae.state_dict(), f"{prefix}{run_id}.model")
-    save_files(f"{prefix}{run_id}", cell_adata=gene_adata, peak_adata=peak_adata)
+    save_files(f"{prefix}{run_id}", cell_adata=adata_CG, peak_adata=adata_CP)
 
 
 def human_format(num):
@@ -327,19 +364,47 @@ def save_files(run_id, cell_adata=None, peak_adata=None):
         f"{run_id}.checkpoints/peak_bias.npy",
         model.bias_dict["peak__cell_has_accessible_peak"].detach().numpy(),
     )
+    np.save(
+        f"{run_id}.checkpoints/gene_scale.npy",
+        model.scale_dict["gene__cell_expresses_gene"].detach().numpy(),
+    )
+    np.save(
+        f"{run_id}.checkpoints/gene_bias.npy",
+        model.bias_dict["gene__cell_expresses_gene"].detach().numpy(),
+    )
+
+    np.save(
+        f"{run_id}.checkpoints/cell_peak_scale.npy",
+        model.scale_dict["cell__cell_has_accessible_peak"].detach().numpy(),
+    )
+    np.save(
+        f"{run_id}.checkpoints/cell_peak_bias.npy",
+        model.bias_dict["cell__cell_has_accessible_peak"].detach().numpy(),
+    )
+    np.save(
+        f"{run_id}.checkpoints/cell_gene_scale.npy",
+        model.scale_dict["cell__cell_expresses_gene"].detach().numpy(),
+    )
+    np.save(
+        f"{run_id}.checkpoints/cell_gene_bias.npy",
+        model.bias_dict["cell__cell_expresses_gene"].detach().numpy(),
+    )
     cell_x = model.encoder.__mu_dict__["cell"].detach().cpu()
+    obs_use = None
+    if adata_CG is not None:
+        obs_use = adata_CG.obs
+    elif adata_CP is not None:
+        obs_use = adata_CP.obs
     adata_C = ad.AnnData(
         X=cell_x.numpy(),
         layers={
             "X_logstd": model.encoder.__logstd_dict__["cell"].detach().cpu().numpy()
         },
-        obs=adata_CG.obs if adata_CG is not None else None,
+        obs=obs_use,
         obsm={"X_pca": cell_x.numpy()},
     )
     sc.pp.neighbors(adata_C)
     sc.tl.umap(adata_C, random_state=2025)
-    if adata_CG is not None:
-        adata_C.obs["cell_type"] = adata_CG.obs["cell_type"]
     
     adata_P = ad.AnnData(
         X=model.encoder.__mu_dict__["peak"].detach().cpu().numpy(),
@@ -368,21 +433,17 @@ def main(args):
     run(**kwargs)
 
 def add_argument(parser):
-    parser.add_argument("data_path")
-    parser.add_argument("--gene-adata", type=str, default=None)
-    parser.add_argument("--peak-adata", type=str, default=None)
-    parser.add_argument("--batch-size", type=int, default=100_000)
-    parser.add_argument("--layers", type=int, default=1)
-    parser.add_argument("--output-dir", type=str, default="rna")
-    parser.add_argument("--load-checkpoint", action="store_true")
-    parser.add_argument("--project-decoder", action="store_true")
-    parser.add_argument("--promote-indep", action="store_true")
-    parser.add_argument("--reweight-rarecell", action="store_true")
-    parser.add_argument("--hidden-dims", type=int, default=50)
-    parser.add_argument("--hsic-lam", type=float, default=0.01)
-    parser.add_argument("--nonneg", action="store_true")
-    parser.add_argument("--get-adata", action="store_true")
-    parser.add_argument("--pos-scale", action="store_true")
+    parser.add_argument("data_path", help="Path to the input data file (HetData.dat or similar)")
+    parser.add_argument("--adata-CG", type=str, default=None, help="Path to gene AnnData (.h5ad) file for fetching cell/gene metadata. Output adata_G.h5ad will have no .obs attribute if not provided.")
+    parser.add_argument("--adata-CP", type=str, default=None, help="Path to peak/ATAC AnnData (.h5ad) file for fetching cell/peak metadata. Output adata_G.h5ad will have no .obs attribute if not provided.")
+    parser.add_argument("--batch-size", type=int, default=100_000, help="Batch size (number of edges) per DataLoader batch")
+    parser.add_argument("--output-dir", type=str, default=".", help="Top-level output directory where run artifacts will be stored")
+    parser.add_argument("--load-checkpoint", action="store_true", help="If set, resume training from the last checkpoint")
+    parser.add_argument("--promote-indep", action="store_true", help="Enable HSIC-based independence promotion between modalities")
+    parser.add_argument("--hidden-dims", type=int, default=50, help="Dimensionality of hidden and latent embeddings")
+    parser.add_argument("--hsic-lam", type=float, default=0.01, help="HSIC regularization lambda (strength)")
+    parser.add_argument("--get-adata", action="store_true", help="Only extract and save AnnData outputs from the last checkpoint and exit")
+    parser.add_argument("--pos-scale", action="store_true", help="Use positive-only scaling for the mean of output distributions")
     return parser
 
 if __name__ == "__main__":

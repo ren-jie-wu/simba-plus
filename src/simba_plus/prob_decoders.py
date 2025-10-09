@@ -72,8 +72,9 @@ class NormalDataDecoder(ProximityDecoder):
             scale = src_scale * dst_scale
         cos = torch.nn.CosineSimilarity()
         loc = scale * cos(u, v) + src_bias + dst_bias
-        std = torch.exp(src_std + dst_std)
-        return D.Normal(loc, std)
+        std = F.softplus(src_std + dst_std) + 1e-3
+        # std = torch.exp(src_std + dst_std)
+        return D.Normal(loc, std, validate_args=True)
 
 
 class PoissonDataDecoder(ProximityDecoder):
@@ -105,7 +106,7 @@ class PoissonDataDecoder(ProximityDecoder):
         dst_std,
         # b: torch.Tensor, l: Optional[torch.Tensor]
     ) -> D.Normal:
-        scale = torch.exp(src_scale) * torch.exp(dst_scale)
+        scale = F.softplus(src_scale) * F.softplus(dst_scale)
         cos = torch.nn.CosineSimilarity()
         loc = scale * torch.exp(cos(u, v) + src_bias + dst_bias)
         return D.Poisson(loc)

@@ -42,6 +42,7 @@ def main():
     load_data_parser.add_argument(
         "out_path",
         type=str,
+        default=".",
         help="Path to the saved HeteroData object (e.g., .pt file).",
     )
 

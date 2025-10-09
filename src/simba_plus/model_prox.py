@@ -8,7 +8,9 @@ from torch_geometric.data import HeteroData
 import torch.nn as nn
 from torch_geometric.typing import EdgeType, NodeType
 from simba_plus.encoders import TransEncoder
-from simba_plus.utils import negative_sampling
+
+# from simba_plus.utils import negative_sampling
+from torch_geometric.utils import negative_sampling
 from simba_plus.losses import bernoulli_kl_loss
 from simba_plus.decoders import RelationalEdgeDistributionDecoder
 from simba_plus._utils import (
@@ -33,7 +35,7 @@ class LightningProxModel(L.LightningModule):
         n_latent_dims: int = 50,
         decoder_class: torch.nn.Module = RelationalEdgeDistributionDecoder,
         device="cpu",
-        num_neg_samples_fold: int = 2,
+        num_neg_samples_fold: int = 1,
         num_layers: int = 1,
         num_heads: int = 1,
         project_decoder: bool = True,
@@ -53,6 +55,8 @@ class LightningProxModel(L.LightningModule):
         reweight_rarecell: bool = False,
         reweight_rarecell_neighbors: Optional[int] = None,
         positive_scale: bool = False,
+        train_data_dict: Optional[Dict[EdgeType, Tensor]] = None,
+        val_data_dict: Optional[Dict[EdgeType, Tensor]] = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -91,6 +95,16 @@ class LightningProxModel(L.LightningModule):
         self.num_nodes_dict = {
             node_type: x.shape[0] for (node_type, x) in data.x_dict.items()
         }
+        self.train_data_dict = train_data_dict
+        self.train_data = self.data.edge_subgraph(
+            {tuple(k.split("__")): v for k, v in train_data_dict.items()}
+        )
+        train_val_idx = {}
+        for k in train_data_dict.keys():
+            train_val_idx[k] = torch.cat([train_data_dict[k], val_data_dict[k]])
+        self.train_val_data = self.data.edge_subgraph(
+            {tuple(k.split("__")): v for k, v in train_val_idx.items()}
+        )
         self.reweight_rarecell = reweight_rarecell
         if self.reweight_rarecell:
             self.cell_weights = torch.ones(data["cell"].num_nodes, device=device)
@@ -217,12 +231,6 @@ class LightningProxModel(L.LightningModule):
         if self.hsic is not None:
             update_lr(self.hsic_optimizer, self.hsic.lam * self.learning_rate)
 
-    # def initialize_node_embedding(self, data: HeteroData, requires_grad: bool = True):
-    #     for ntype in data.node_types:
-    #         emb = nn.Parameter(data[ntype].x, requires_grad=requires_grad)
-    #         data[ntype].x = emb
-    #     return data
-
     def encode(self, *args, **kwargs) -> Tensor:
         r"""Runs the encoder and computes node-wise latent variables."""
         return self.encoder(*args, **kwargs)
@@ -289,7 +297,26 @@ class LightningProxModel(L.LightningModule):
             bias_dict=self.bias_dict,
             std_dict=self.std_dict,
         )
+
         if neg_edge_index_dict is None:
+            if self.training:
+                pos_idx_data = self.train_data
+            else:
+                pos_idx_data = self.train_val_data
+            batch_idx_to_dense = {
+                node_type: {
+                    batch[node_type].n_id[i]: i
+                    for i in range(len(batch[node_type].n_id))
+                }
+                for node_type in self.node_types
+            }
+            dense_to_batch_idx = {
+                node_type: {
+                    i: batch[node_type].n_id[i]
+                    for i in range(len(batch[node_type].n_id))
+                }
+                for node_type in self.node_types
+            }
             neg_edge_index_dict = {}
             for edge_type, pos_edge_index in pos_edge_index_dict.items():
                 src_type, _, dst_type = edge_type
@@ -297,11 +324,21 @@ class LightningProxModel(L.LightningModule):
                     neg_src_idx,
                     neg_dst_idx,
                 ) = negative_sampling(
-                    pos_edge_index,
-                    num_nodes=(batch[src_type].num_nodes, batch[dst_type].num_nodes),
-                    num_neg_samples_fold=self.num_neg_samples_fold,
+                    pos_idx_data.node_subgraph(
+                        {src_type: batch[src_type].n_id, dst_type: batch[dst_type].n_id}
+                    )[edge_type]
+                    .edge_index.copy()
+                    .apply(batch_idx_to_dense.get),
+                    num_nodes=(
+                        batch[src_type].num_nodes,
+                        batch[dst_type].num_nodes,
+                    ),
+                    # num_neg_samples_fold=self.num_neg_samples_fold,
+                    num_neg_samples=pos_edge_index.shape[1] * self.num_neg_samples_fold,
                     # method="dense",
                 )
+                neg_src_idx = neg_src_idx.apply(dense_to_batch_idx[src_type].get)
+                neg_dst_idx = neg_dst_idx.apply(dense_to_batch_idx[dst_type].get)
                 if (neg_src_idx > batch[src_type].num_nodes).any():  # pragma: no cover
                     raise ValueError(
                         f"Negative sampling produced indices larger than the number of nodes in {src_type}. "
@@ -555,6 +592,14 @@ class LightningProxModel(L.LightningModule):
             on_step=False,
             on_epoch=True,
         )
+        # Log per-batch (step) NLL in addition to per-epoch aggregation
+        self.log(
+            "nll_loss_step",
+            batch_nll_loss * self.nll_scale,
+            batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
+            on_step=True,
+            on_epoch=False,
+        )
         self.log(
             "kl_div_loss",
             batch_kl_div_loss,
@@ -609,6 +654,14 @@ class LightningProxModel(L.LightningModule):
             batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
             on_step=False,
             on_epoch=True,
+        )
+        # Also log per-validation-step NLL (so we can monitor batch-level val NLL)
+        self.log(
+            "val_nll_loss_step",
+            batch_nll_loss * self.val_nll_scale,
+            batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
+            on_step=True,
+            on_epoch=False,
         )
         self.log(
             "val_nll_loss_monitored",
@@ -708,3 +761,7 @@ class LightningProxModel(L.LightningModule):
                     0
                 ]["lr"],
             )
+
+    def on_save_checkpoint(self, checkpoint):
+        # Remove the argument from the checkpoint before it is saved
+        checkpoint.pop("train_data_dict", None)
