@@ -98,13 +98,13 @@ class LightningProxModel(L.LightningModule):
         self.train_data_dict = train_data_dict
         self.train_data = self.data.edge_subgraph(
             {tuple(k.split("__")): v for k, v in train_data_dict.items()}
-        )
+        ).to(device)
         train_val_idx = {}
         for k in train_data_dict.keys():
             train_val_idx[k] = torch.cat([train_data_dict[k], val_data_dict[k]])
         self.train_val_data = self.data.edge_subgraph(
             {tuple(k.split("__")): v for k, v in train_val_idx.items()}
-        )
+        ).to(device)
         self.reweight_rarecell = reweight_rarecell
         if self.reweight_rarecell:
             self.cell_weights = torch.ones(data["cell"].num_nodes, device=device)
@@ -305,30 +305,41 @@ class LightningProxModel(L.LightningModule):
                 pos_idx_data = self.train_val_data
             batch_idx_to_dense = {
                 node_type: {
-                    batch[node_type].n_id[i]: i
+                    batch[node_type].n_id[i].item(): i
                     for i in range(len(batch[node_type].n_id))
                 }
-                for node_type in self.node_types
+                for node_type in batch.node_types
             }
             dense_to_batch_idx = {
                 node_type: {
-                    i: batch[node_type].n_id[i]
+                    i: batch[node_type].n_id[i].item()
                     for i in range(len(batch[node_type].n_id))
                 }
-                for node_type in self.node_types
+                for node_type in batch.node_types
             }
             neg_edge_index_dict = {}
+
             for edge_type, pos_edge_index in pos_edge_index_dict.items():
+                if len(pos_edge_index) == 0:
+                    continue
                 src_type, _, dst_type = edge_type
+                pos_edges = (
+                    pos_idx_data.node_type_subgraph([src_type, dst_type])
+                    .subgraph(
+                        {
+                            src_type: batch[src_type].n_id,
+                            dst_type: batch[dst_type].n_id,
+                        }
+                    )[edge_type]
+                    .edge_index.cpu()
+                )
+                conv_src_idx = pos_edges[0, :].apply_(batch_idx_to_dense[src_type].get)
+                conv_dst_idx = pos_edges[1, :].apply_(batch_idx_to_dense[dst_type].get)
                 (
                     neg_src_idx,
                     neg_dst_idx,
                 ) = negative_sampling(
-                    pos_idx_data.node_subgraph(
-                        {src_type: batch[src_type].n_id, dst_type: batch[dst_type].n_id}
-                    )[edge_type]
-                    .edge_index.copy()
-                    .apply(batch_idx_to_dense.get),
+                    torch.stack([conv_src_idx, conv_dst_idx]),
                     num_nodes=(
                         batch[src_type].num_nodes,
                         batch[dst_type].num_nodes,
@@ -337,8 +348,8 @@ class LightningProxModel(L.LightningModule):
                     num_neg_samples=pos_edge_index.shape[1] * self.num_neg_samples_fold,
                     # method="dense",
                 )
-                neg_src_idx = neg_src_idx.apply(dense_to_batch_idx[src_type].get)
-                neg_dst_idx = neg_dst_idx.apply(dense_to_batch_idx[dst_type].get)
+                neg_src_idx = neg_src_idx.apply_(dense_to_batch_idx[src_type].get)
+                neg_dst_idx = neg_dst_idx.apply_(dense_to_batch_idx[dst_type].get)
                 if (neg_src_idx > batch[src_type].num_nodes).any():  # pragma: no cover
                     raise ValueError(
                         f"Negative sampling produced indices larger than the number of nodes in {src_type}. "

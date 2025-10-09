@@ -64,6 +64,7 @@ def run(
     os.makedirs(checkpoint_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device} as device...")
+    #torch.set_default_device(device)
     data = simba_plus.load_data.load_from_path(data_path)
     print(f"{data['cell'].x.device}: {data}")
     dim_u = hidden_dims
@@ -100,13 +101,13 @@ def run(
 
         indices = torch.arange(num_edges)[torch.randperm(num_edges)]
         print("Selecting source node")
-        selected_indices.update(np.unique(src_nodes[indices].numpy(), return_index=True)[1].tolist())
+        selected_indices.update(np.unique(src_nodes[indices].cpu().numpy(), return_index=True)[1].tolist())
         print("Selecting destination node")
-        selected_indices.update(np.unique(dst_nodes[indices].numpy(), return_index=True)[1].tolist())
+        selected_indices.update(np.unique(dst_nodes[indices].cpu().numpy(), return_index=True)[1].tolist())
         print("Selected indices")
 
         # Fill up to 90% for train, 5% for val
-        remaining_indices = [i for i in indices.numpy() if i not in selected_indices]
+        remaining_indices = [i for i in indices.cpu().numpy() if i not in selected_indices]
         print("Got remaining indices")
         train_size = int(num_edges * 0.9)
         val_size = int(num_edges * 0.05)
@@ -229,6 +230,7 @@ def run(
     else:
         hsic = None
     train_edge_index_dict = {"__".join(edge_type):train_data_dict[edge_type].index for edge_type in edge_types}
+    val_edge_index_dict = {"__".join(edge_type):val_data_dict[edge_type].index for edge_type in edge_types}
     rpvgae = LightningProxModel(
         data,
         encoder_class=TransEncoder,
@@ -251,6 +253,7 @@ def run(
         nonneg=nonneg,
         positive_scale=pos_scale,
         train_data_dict = train_edge_index_dict,
+        val_data_dict = val_edge_index_dict,
     ).to(device)
 
     def train(
