@@ -100,17 +100,18 @@ def run(
         scale_tag = ".d"
     else:
         scale_tag = ""
-    print(f"batch size: {batch_size}")
     run_id = f"pl_{os.path.basename(data_path).split('_HetData.dat')[0]}_{human_format(batch_size)}{'x'+str(n_batch_sampling) if n_batch_sampling > 1 else ''}_prox{'.noproj' if not project_decoder else ''}{'.rw' if reweight_rarecell else ''}{'.indep2_' + format(hsic_lam, '1.0e') if hsic_lam != 0 else ''}{'.d' + str(hidden_dims) if hidden_dims != 50 else ''}{'.enss' if not edgetype_specific_scale else ''}{'.enst' if not edgetype_specific_std else ''}{'.ensb' if not edgetype_specific_bias else ''}{'.nn' if nonneg else ''}{scale_tag}.randinit"
-    print(f"RUN ID: {run_id}")
+    
     prefix = f"/data/pinello/PROJECTS/2022_12_GCPA/runs/{output_dir}/"
     checkpoint_dir = f"{prefix}/{run_id}.checkpoints/"
+    logger = setup_logging(checkpoint_dir)
     os.makedirs(checkpoint_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using {device} as device...")
+    logger.info(f"Run ID: {run_id}")
+    logger.info(f"Using {device} as device...")
     #torch.set_default_device(device)
     data = simba_plus.load_data.load_from_path(data_path)
-    print(f"{data['cell'].x.device}: {data}")
+    logger.info(f"Data loaded to {data['cell'].x.device}: {data}")
     dim_u = hidden_dims
     num_neg_samples_fold = 1
 
@@ -165,15 +166,15 @@ def run(
             selected_indices = set()
 
             indices = torch.arange(num_edges)[torch.randperm(num_edges)]
-            print("Selecting source node")
+            logger.info("Selecting source node")
             selected_indices.update(np.unique(src_nodes[indices].cpu().numpy(), return_index=True)[1].tolist())
-            print("Selecting destination node")
+            logger.info("Selecting destination node")
             selected_indices.update(np.unique(dst_nodes[indices].cpu().numpy(), return_index=True)[1].tolist())
-            print("Selected indices")
+            logger.info("Selected indices")
 
             # Fill up to 90% for train, 5% for val
             remaining_indices = [i for i in indices.cpu().numpy() if i not in selected_indices]
-            print("Got remaining indices")
+            logger.info("Got remaining indices")
             train_size = int(num_edges * 0.9)
             val_size = int(num_edges * 0.05)
             selected_indices = list(selected_indices)
@@ -228,9 +229,9 @@ def run(
                 k: (v.to(device) if isinstance(v, torch.Tensor) else torch.tensor(v, device=device))
                 for k, v in loaded.items()
             }
-            print(f"Loaded node_weights_dict from {node_weights_path}")
+            logger.info(f"Loaded node_weights_dict from {node_weights_path}")
         except Exception as e:  # pragma: no cover - best-effort load
-            print(f"Failed to load node_weights_dict from {node_weights_path}: {e}")
+            logger.info(f"Failed to load node_weights_dict from {node_weights_path}: {e}")
     else:
         for train_loader in train_loaders:
             for batch in tqdm(train_loader):
@@ -258,7 +259,7 @@ def run(
 
     n_batches = sum([len(t) for t in train_loaders])
     n_val_batches = sum([len(t) for t in val_loaders])
-    print(f"@N_BATCHES:{n_batches}")
+    logger.info(f"@N_BATCHES:{n_batches}")
 
     n_dense_edges = 0
     for src_nodetype, _, dst_nodetype in edge_types:
@@ -268,7 +269,7 @@ def run(
     val_nll_scale = n_dense_edges / (
         (num_neg_samples_fold + 1) * batch_size * n_val_batches
     )
-    print(f"NLLSCALE:{nll_scale}, {val_nll_scale}")
+    logger.info(f"NLLSCALE:{nll_scale}, {val_nll_scale}")
 
     if hsic_lam != 0:
         cell_edge_types = []
@@ -276,7 +277,7 @@ def run(
             if edge_type[0] == "cell" or edge_type[1] == "cell":
                 cell_edge_types.append(edge_type)
         hsic_lam = n_batches * hsic_lam
-        print(f"lambda_HSIC= {hsic_lam}")
+        logger.info(f"lambda_HSIC= {hsic_lam}")
         hsic = HSIC(
             subset_samples=min(3000, max(1000, data["cell"].num_nodes // n_batches)),
             lam=hsic_lam,
@@ -377,7 +378,7 @@ def run(
                 num_training=30,
                 early_stop_threshold=None,
             )
-            print(f"@TRAIN: LR={rpvgae.learning_rate}")
+            logger.info(f"@TRAIN: LR={rpvgae.learning_rate}")
         trainer.fit(
             model=rpvgae,
             datamodule=pldata,
