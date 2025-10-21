@@ -30,7 +30,6 @@ torch_geometric.seed_everything(2025)
 # https://pytorch-lightning.readthedocs.io/en/stable/model/train_model_basic.html
 
 
-
 def setup_logging(checkpoint_dir):
     """Setup logging to both file and console"""
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -64,13 +63,13 @@ def setup_logging(checkpoint_dir):
     return logger
 
 
-
 def run(
-    batch_size: int=1_000_000,
-    n_batch_sampling: int=1,
+    batch_size: int = 1_000_000,
+    n_batch_sampling: int = 1,
     output_dir: str = "rna",
     data_path: str = None,
     load_checkpoint: bool = False,
+    checkpoint_suffix: str = "",
     reweight_rarecell: bool = False,
     n_kl_warmup: int = 10,
     project_decoder: bool = False,
@@ -101,7 +100,7 @@ def run(
     else:
         scale_tag = ""
     run_id = f"pl_{os.path.basename(data_path).split('_HetData.dat')[0]}_{human_format(batch_size)}{'x'+str(n_batch_sampling) if n_batch_sampling > 1 else ''}_prox{'.noproj' if not project_decoder else ''}{'.rw' if reweight_rarecell else ''}{'.indep2_' + format(hsic_lam, '1.0e') if hsic_lam != 0 else ''}{'.d' + str(hidden_dims) if hidden_dims != 50 else ''}{'.enss' if not edgetype_specific_scale else ''}{'.enst' if not edgetype_specific_std else ''}{'.ensb' if not edgetype_specific_bias else ''}{'.nn' if nonneg else ''}{scale_tag}.randinit"
-    
+
     prefix = f"/data/pinello/PROJECTS/2022_12_GCPA/runs/{output_dir}/"
     checkpoint_dir = f"{prefix}/{run_id}.checkpoints/"
     logger = setup_logging(checkpoint_dir)
@@ -109,15 +108,22 @@ def run(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Run ID: {run_id}")
     logger.info(f"Using {device} as device...")
-    #torch.set_default_device(device)
+    # torch.set_default_device(device)
     data = simba_plus.load_data.load_from_path(data_path)
     logger.info(f"Data loaded to {data['cell'].x.device}: {data}")
     dim_u = hidden_dims
     num_neg_samples_fold = 1
 
     if get_adata:
-        logger.info("With `--get-adata` flag, only getting adata output from the last checkpoint...")
-        save_files(f"{prefix}{run_id}", cell_adata=adata_CG, peak_adata=adata_CP)
+        logger.info(
+            "With `--get-adata` flag, only getting adata output from the last checkpoint..."
+        )
+        save_files(
+            f"{prefix}{run_id}",
+            cell_adata=adata_CG,
+            peak_adata=adata_CP,
+            checkpoint_suffix=checkpoint_suffix,
+        )
         return
 
     loss_df = None
@@ -125,12 +131,8 @@ def run(
 
     edge_types = data.edge_types
     if "multiome" in data_path and "motif" in data.node_types:
-        edge_types = [
-            ("cell", "has_accessible", "peak"),
-            ("cell", "expresses", "gene")
-        ]
+        edge_types = [("cell", "has_accessible", "peak"), ("cell", "expresses", "gene")]
 
-    
     torch.manual_seed(2025)
     data_idx_path = f"{checkpoint_dir}/data_idx.pkl"
     train_data_dict = {}
@@ -147,14 +149,22 @@ def run(
             for edge_type in edge_types:
                 edge_key = "__".join(edge_type)
                 all_edges = set(range(data[edge_type].num_edges))
-                val_test_edges = set(val_edge_index_dict[edge_key].tolist() + 
-                                   test_edge_index_dict[edge_key].tolist())
+                val_test_edges = set(
+                    val_edge_index_dict[edge_key].tolist()
+                    + test_edge_index_dict[edge_key].tolist()
+                )
                 train_edges = list(all_edges - val_test_edges)
                 train_edge_index_dict[edge_key] = torch.tensor(train_edges)
-                train_data_dict[edge_type] = CustomIndexDataset(edge_type, train_edge_index_dict[edge_key])
-                val_data_dict[edge_type] = CustomIndexDataset(edge_type, val_edge_index_dict[edge_key])
-                test_data_dict[edge_type] = CustomIndexDataset(edge_type, test_edge_index_dict[edge_key])
-                
+                train_data_dict[edge_type] = CustomIndexDataset(
+                    edge_type, train_edge_index_dict[edge_key]
+                )
+                val_data_dict[edge_type] = CustomIndexDataset(
+                    edge_type, val_edge_index_dict[edge_key]
+                )
+                test_data_dict[edge_type] = CustomIndexDataset(
+                    edge_type, test_edge_index_dict[edge_key]
+                )
+
     else:
         for edge_type in edge_types:
             num_edges = data[edge_type].num_edges
@@ -167,29 +177,59 @@ def run(
 
             indices = torch.arange(num_edges)[torch.randperm(num_edges)]
             logger.info("Selecting source node")
-            selected_indices.update(np.unique(src_nodes[indices].cpu().numpy(), return_index=True)[1].tolist())
+            selected_indices.update(
+                np.unique(src_nodes[indices].cpu().numpy(), return_index=True)[
+                    1
+                ].tolist()
+            )
             logger.info("Selecting destination node")
-            selected_indices.update(np.unique(dst_nodes[indices].cpu().numpy(), return_index=True)[1].tolist())
+            selected_indices.update(
+                np.unique(dst_nodes[indices].cpu().numpy(), return_index=True)[
+                    1
+                ].tolist()
+            )
             logger.info("Selected indices")
 
             # Fill up to 90% for train, 5% for val
-            remaining_indices = [i for i in indices.cpu().numpy() if i not in selected_indices]
+            remaining_indices = [
+                i for i in indices.cpu().numpy() if i not in selected_indices
+            ]
             logger.info("Got remaining indices")
             train_size = int(num_edges * 0.9)
             val_size = int(num_edges * 0.05)
             selected_indices = list(selected_indices)
-            train_index = torch.tensor(selected_indices + remaining_indices[:train_size - len(selected_indices)])
-            val_index = torch.tensor(remaining_indices[(train_size - len(selected_indices)):(train_size - len(selected_indices) + val_size)])
-            test_index = torch.tensor(remaining_indices[(train_size - len(selected_indices) + val_size):])
+            train_index = torch.tensor(
+                selected_indices
+                + remaining_indices[: train_size - len(selected_indices)]
+            )
+            val_index = torch.tensor(
+                remaining_indices[
+                    (train_size - len(selected_indices)) : (
+                        train_size - len(selected_indices) + val_size
+                    )
+                ]
+            )
+            test_index = torch.tensor(
+                remaining_indices[(train_size - len(selected_indices) + val_size) :]
+            )
 
             train_data_dict[edge_type] = CustomIndexDataset(edge_type, train_index)
             val_data_dict[edge_type] = CustomIndexDataset(edge_type, val_index)
             test_data_dict[edge_type] = CustomIndexDataset(edge_type, test_index)
-        train_edge_index_dict = {"__".join(edge_type):train_data_dict[edge_type].index for edge_type in edge_types}
-        val_edge_index_dict = {"__".join(edge_type):val_data_dict[edge_type].index for edge_type in edge_types}
-        test_edge_index_dict = {"__".join(edge_type):test_data_dict[edge_type].index for edge_type in edge_types}
+        train_edge_index_dict = {
+            "__".join(edge_type): train_data_dict[edge_type].index
+            for edge_type in edge_types
+        }
+        val_edge_index_dict = {
+            "__".join(edge_type): val_data_dict[edge_type].index
+            for edge_type in edge_types
+        }
+        test_edge_index_dict = {
+            "__".join(edge_type): test_data_dict[edge_type].index
+            for edge_type in edge_types
+        }
         with open(data_idx_path, "wb") as f:
-            pkl.dump({"val":val_edge_index_dict, "test":test_edge_index_dict}, f)
+            pkl.dump({"val": val_edge_index_dict, "test": test_edge_index_dict}, f)
 
     def collate(data):
         types, idxs = zip(*data)
@@ -226,12 +266,18 @@ def run(
             loaded = torch.load(node_weights_path, map_location="cpu")
             # Convert loaded values to device tensors if needed
             node_weights_dict = {
-                k: (v.to(device) if isinstance(v, torch.Tensor) else torch.tensor(v, device=device))
+                k: (
+                    v.to(device)
+                    if isinstance(v, torch.Tensor)
+                    else torch.tensor(v, device=device)
+                )
                 for k, v in loaded.items()
             }
             logger.info(f"Loaded node_weights_dict from {node_weights_path}")
         except Exception as e:  # pragma: no cover - best-effort load
-            logger.info(f"Failed to load node_weights_dict from {node_weights_path}: {e}")
+            logger.info(
+                f"Failed to load node_weights_dict from {node_weights_path}: {e}"
+            )
     else:
         for train_loader in train_loaders:
             for batch in tqdm(train_loader):
@@ -284,8 +330,7 @@ def run(
         )
     else:
         hsic = None
-    
-    
+
     rpvgae = LightningProxModel(
         data,
         encoder_class=TransEncoder,
@@ -306,8 +351,8 @@ def run(
         node_weights_dict=node_weights_dict,
         nonneg=nonneg,
         positive_scale=pos_scale,
-        train_data_dict = train_edge_index_dict,
-        val_data_dict = val_edge_index_dict,
+        train_data_dict=train_edge_index_dict,
+        val_data_dict=val_edge_index_dict,
         decoder_scale_src=scale_src,
     ).to(device)
 
@@ -382,7 +427,11 @@ def run(
         trainer.fit(
             model=rpvgae,
             datamodule=pldata,
-            ckpt_path=f"{checkpoint_dir}/last.ckpt" if load_checkpoint else None,
+            ckpt_path=(
+                f"{checkpoint_dir}/last{checkpoint_suffix}.ckpt"
+                if load_checkpoint
+                else None
+            ),
         )
 
     train(
@@ -407,11 +456,18 @@ def human_format(num):
     return f"{str(num).rstrip('0').rstrip('.')}{["", "K", "M", "B", "T"][magnitude]}"
 
 
-def save_files(run_id, cell_adata=None, peak_adata=None):
+def save_files(
+    run_id: str,
+    cell_adata: str = None,
+    peak_adata: str = None,
+    checkpoint_suffix: str = "",
+):
     adata_CG = ad.read_h5ad(cell_adata) if cell_adata is not None else None
     adata_CP = ad.read_h5ad(peak_adata) if peak_adata is not None else None
     model = LightningProxModel.load_from_checkpoint(
-        f"{run_id}.checkpoints/last.ckpt", weights_only=True, map_location="cpu"
+        f"{run_id}.checkpoints/last{checkpoint_suffix}.ckpt",
+        weights_only=True,
+        map_location="cpu",
     )
     if "peak" in model.encoder.__mu_dict__:
         np.save(
@@ -423,9 +479,9 @@ def save_files(run_id, cell_adata=None, peak_adata=None):
             model.bias_dict["peak__cell_has_accessible_peak"].detach().numpy(),
         )
         np.save(
-        f"{run_id}.checkpoints/cell_peak_scale.npy",
-        model.scale_dict["cell__cell_has_accessible_peak"].detach().numpy(),
-    )
+            f"{run_id}.checkpoints/cell_peak_scale.npy",
+            model.scale_dict["cell__cell_has_accessible_peak"].detach().numpy(),
+        )
         np.save(
             f"{run_id}.checkpoints/cell_peak_bias.npy",
             model.bias_dict["cell__cell_has_accessible_peak"].detach().numpy(),
@@ -463,7 +519,7 @@ def save_files(run_id, cell_adata=None, peak_adata=None):
     )
     sc.pp.neighbors(adata_C)
     sc.tl.umap(adata_C, random_state=2025)
-    
+
     adata_P = ad.AnnData(
         X=model.encoder.__mu_dict__["peak"].detach().cpu().numpy(),
         layers={
@@ -482,7 +538,6 @@ def save_files(run_id, cell_adata=None, peak_adata=None):
         adata_G.write(f"{run_id}.checkpoints/adata_G.h5ad")
     adata_C.write(f"{run_id}.checkpoints/adata_C.h5ad")
     adata_P.write(f"{run_id}.checkpoints/adata_P.h5ad")
-    
 
 
 def main(args):
@@ -490,19 +545,72 @@ def main(args):
     del kwargs["subcommand"]
     run(**kwargs)
 
+
 def add_argument(parser):
     parser.description = "Train SIMBA+ model on the given HetData object."
-    parser.add_argument("data_path", help="Path to the input data file (HetData.dat or similar)")
-    parser.add_argument("--adata-CG", type=str, default=None, help="Path to gene AnnData (.h5ad) file for fetching cell/gene metadata. Output adata_G.h5ad will have no .obs attribute if not provided.")
-    parser.add_argument("--adata-CP", type=str, default=None, help="Path to peak/ATAC AnnData (.h5ad) file for fetching cell/peak metadata. Output adata_G.h5ad will have no .obs attribute if not provided.")
-    parser.add_argument("--batch-size", type=int, default=100_000, help="Batch size (number of edges) per DataLoader batch")
-    parser.add_argument("--output-dir", type=str, default=".", help="Top-level output directory where run artifacts will be stored")
-    parser.add_argument("--load-checkpoint", action="store_true", help="If set, resume training from the last checkpoint")
-    parser.add_argument("--hidden-dims", type=int, default=50, help="Dimensionality of hidden and latent embeddings")
-    parser.add_argument("--hsic-lam", type=float, default=0.0, help="HSIC regularization lambda (strength)")
-    parser.add_argument("--get-adata", action="store_true", help="Only extract and save AnnData outputs from the last checkpoint and exit")
-    parser.add_argument("--pos-scale", action="store_true", help="Use positive-only scaling for the mean of output distributions")
+    parser.add_argument(
+        "data_path", help="Path to the input data file (HetData.dat or similar)"
+    )
+    parser.add_argument(
+        "--adata-CG",
+        type=str,
+        default=None,
+        help="Path to gene AnnData (.h5ad) file for fetching cell/gene metadata. Output adata_G.h5ad will have no .obs attribute if not provided.",
+    )
+    parser.add_argument(
+        "--adata-CP",
+        type=str,
+        default=None,
+        help="Path to peak/ATAC AnnData (.h5ad) file for fetching cell/peak metadata. Output adata_G.h5ad will have no .obs attribute if not provided.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=100_000,
+        help="Batch size (number of edges) per DataLoader batch",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=".",
+        help="Top-level output directory where run artifacts will be stored",
+    )
+    parser.add_argument(
+        "--load-checkpoint",
+        action="store_true",
+        help="If set, resume training from the last checkpoint",
+    )
+    parser.add_argument(
+        "--checkpoint-suffix",
+        type=str,
+        default="",
+        help="Append a suffix to checkpoint filenames (last{suffix}.ckpt)",
+    )
+    parser.add_argument(
+        "--hidden-dims",
+        type=int,
+        default=50,
+        help="Dimensionality of hidden and latent embeddings",
+    )
+    parser.add_argument(
+        "--hsic-lam",
+        type=float,
+        default=0.0,
+        help="HSIC regularization lambda (strength)",
+    )
+    parser.add_argument(
+        "--get-adata",
+        action="store_true",
+        help="Only extract and save AnnData outputs from the last checkpoint and exit",
+    )
+    parser.add_argument(
+        "--pos-scale",
+        action="store_true",
+        help="Use positive-only scaling for the mean of output distributions",
+    )
+
     return parser
+
 
 if __name__ == "__main__":
     print("run 0")
