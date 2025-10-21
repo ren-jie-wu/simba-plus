@@ -53,6 +53,7 @@ class RelationalEdgeDistributionDecoder(torch.nn.Module):
         edgetype_specific_scale: bool = True,
         edgetype_specific_std: bool = True,
         positive_scale: bool = False,
+        decoder_scale_src: bool = True,
     ) -> None:
         """Initialize the decoder with shared projection matrix per relation type.
         See https://pytorch-geometric.readthedocs.io/en/latest/_modules/torch_geometric/nn/conv/hgt_conv.html#HGTConv
@@ -79,6 +80,7 @@ class RelationalEdgeDistributionDecoder(torch.nn.Module):
                 ](
                     projected_channels,
                     positive_scale=positive_scale,
+                    scale_src=decoder_scale_src,
                 )
         self.add_covariate = add_covariate
         if hasattr(data["cell"], "cat_covs"):

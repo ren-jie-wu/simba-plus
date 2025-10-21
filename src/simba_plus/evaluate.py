@@ -4,6 +4,7 @@ from typing import Literal
 import pickle as pkl
 from argparse import ArgumentParser
 import scipy.sparse
+from scipy.stats import spearmanr
 import numpy as np
 import torch
 from torch import Tensor
@@ -51,6 +52,8 @@ def decode(
     for edge_type, pos_edge_index in pos_edge_index_dict.items():
         if n_negative_samples is None:
             _n_neg_samples = len(pos_edge_index[0])
+        else:
+            _n_neg_samples = n_negative_samples
         src_type, _, dst_type = edge_type
         n_src = z_dict[src_type].shape[0]
         n_dst = z_dict[dst_type].shape[0]
@@ -122,7 +125,10 @@ def get_gexp_metrics(
                     gene_edge_type: gene_label_index.to(device),
                 }
             )
-            print(gene_batch)
+            if n_negative_samples is None:
+                n_negative_samples = (
+                    len(gene_batch["cell", "expresses", "gene"].edge_index[0]) // 10
+                )
             pos_dist_dict, neg_edge_index_dict, neg_dist_dict = decode(
                 model, gene_batch, train_index, n_negative_samples=n_negative_samples
             )
@@ -134,7 +140,7 @@ def get_gexp_metrics(
             print("decoded gexp")
         gexp_pred_mu = torch.cat(means + neg_means)
         gexp_pred_std = torch.cat(stds + neg_stds)
-        gexp_neg_idx = torch.cat(neg_idx)
+        gexp_neg_idx = torch.cat(neg_idx, dim=1)
     pos_idxs = eval_data["cell", "expresses", "gene"].edge_index[:, gexp_dataset.index]
     all_idxs = torch.cat([pos_idxs, gexp_neg_idx], dim=1)
     test_dense_mat = scipy.sparse.coo_matrix(
@@ -149,11 +155,21 @@ def get_gexp_metrics(
     res_out = test_dense_mat.toarray()
     res_out_norm = res_out / (gexp_mean + 1e-6)
     corrs = []
+    spearman_corrs = []
     for i in range(res_out_norm.shape[1]):
         if gexp_mean[i] == 0:
             continue
         corrs.append(np.corrcoef(res_out_norm[:, i], gexp_norm[:, i])[0, 1].item())
-    return {"per-gene corr": np.array(corrs), "corr_mean": np.mean(corrs)}
+        spearman_corrs.append(
+            spearmanr(res_out_norm[:, i], gexp_norm[:, i]).correlation
+        )
+    return {
+        "per-gene corr": np.array(corrs),
+        "corr_mean": np.mean(corrs),
+        "spearman_corr": np.array(spearman_corrs),
+        "spearman_corr_mean": np.mean(spearman_corrs),
+        "pred": test_dense_mat,
+    }
 
 
 def get_accessibility_metrics(
@@ -178,13 +194,10 @@ def get_accessibility_metrics(
     )
     with torch.no_grad():
         model.eval()
-        means = []
-        stds = []
-        neg_means = []
-        neg_stds = []
-        neg_idx = []
+        true_acc = []
+        preds = []
+        edge_idxs = []
         for acc_batch in tqdm(acc_loader):
-
             acc_edge_type, acc_label_index = acc_batch
             acc_edge_type = tuple(acc_edge_type)
             acc_batch = eval_data.edge_type_subgraph(acc_edge_type).edge_subgraph(
@@ -192,13 +205,11 @@ def get_accessibility_metrics(
                     acc_edge_type: acc_label_index.to(device),
                 }
             )
-            true_acc = []
-            preds = []
-            label_idxs = []
-            label_idxs.append(acc_label_index)
+            edge_idxs.append(acc_batch[acc_edge_type].edge_index.cpu())
             pos_dist_dict, neg_edge_index_dict, neg_dist_dict = decode(
                 model, acc_batch, data, n_negative_samples=n_negative_samples
             )
+            edge_idxs.append(neg_edge_index_dict[acc_edge_type].cpu())
             true_acc.append(
                 (
                     torch.cat(
@@ -233,11 +244,19 @@ def get_accessibility_metrics(
             )
         acc_true = torch.cat(true_acc).long()
         acc_pred = torch.cat(preds)
-        acc_edge_idx = torch.cat(label_idxs)
+        acc_edge_idx = torch.cat(edge_idxs, axis=1)
         metrics = compute_classification_metrics(
             acc_true,
             torch.sigmoid(acc_pred),
             plot=False,
+        )
+        print(acc_pred.shape)
+        metrics["pred"] = scipy.sparse.coo_matrix(
+            (
+                acc_pred.detach().cpu().numpy(),
+                (acc_edge_idx[0], acc_edge_idx[1]),
+            ),
+            shape=(eval_data["cell"].num_nodes, eval_data["peak"].num_nodes),
         )
     return metrics
 
@@ -267,7 +286,11 @@ def eval(
     eval_data = data.edge_subgraph(
         {tuple(k.split("__")): v.to(device) for k, v in idx_dict.items()}
     )
-    model = LightningProxModel.load_from_checkpoint(model_path, weights_only=True)
+    if isinstance(eval_data["cell"].batch, np.ndarray):
+        eval_data["cell"].batch = torch.tensor(eval_data["cell"].batch).to(device)
+    model = LightningProxModel.load_from_checkpoint(model_path, weights_only=True).to(
+        device
+    )
     print("loaded model")
     model.eval()
     if eval_split == "val":

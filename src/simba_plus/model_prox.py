@@ -36,8 +36,6 @@ class LightningProxModel(L.LightningModule):
         decoder_class: torch.nn.Module = RelationalEdgeDistributionDecoder,
         device="cpu",
         num_neg_samples_fold: int = 1,
-        num_layers: int = 1,
-        num_heads: int = 1,
         project_decoder: bool = True,
         edgetype_specific_bias: bool = True,
         edgetype_specific_scale: bool = True,
@@ -57,6 +55,7 @@ class LightningProxModel(L.LightningModule):
         positive_scale: bool = False,
         train_data_dict: Optional[Dict[EdgeType, Tensor]] = None,
         val_data_dict: Optional[Dict[EdgeType, Tensor]] = None,
+        decoder_scale_src: bool = True,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -68,8 +67,6 @@ class LightningProxModel(L.LightningModule):
             data,
             n_hidden_dims,
             n_latent_dims,
-            num_heads=num_heads,
-            num_layers=num_layers,
         )
         self.decoder = decoder_class(
             data,
@@ -81,6 +78,7 @@ class LightningProxModel(L.LightningModule):
             edgetype_specific_scale=edgetype_specific_scale,
             edgetype_specific_std=edgetype_specific_std,
             positive_scale=positive_scale,
+            decoder_scale_src=decoder_scale_src,
         )
         self.hsic = hsic
         if self.hsic is not None:

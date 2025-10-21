@@ -1,4 +1,6 @@
 import os
+import logging
+from datetime import datetime
 from itertools import chain
 import argparse
 import pickle as pkl
@@ -21,35 +23,68 @@ from simba_plus.losses import HSIC
 from simba_plus.loader import CustomIndexDataset
 from simba_plus.utils import MyEarlyStopping, negative_sampling
 import torch.multiprocessing
-import logging
 
-logger = logging.getLogger()
+
 torch.multiprocessing.set_sharing_strategy("file_system")
 torch_geometric.seed_everything(2025)
 # https://pytorch-lightning.readthedocs.io/en/stable/model/train_model_basic.html
 
 
+
+def setup_logging(checkpoint_dir):
+    """Setup logging to both file and console"""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    # Create timestamped log file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(checkpoint_dir, f"train_{timestamp}.log")
+
+    # Configure root logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    # File handler with detailed formatting
+    fh = logging.FileHandler(log_file)
+    fh.setLevel(logging.INFO)
+    fh_formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    fh.setFormatter(fh_formatter)
+
+    # Console handler with simpler formatting
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch_formatter = logging.Formatter("%(message)s")
+    ch.setFormatter(ch_formatter)
+
+    # Add both handlers
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+
+    return logger
+
+
+
 def run(
-    batch_size=1_000_000,
-    layers=1,
-    n_batch_sampling=1,
-    output_dir="rna",
-    data_path="../../data/atac/atac_buenrostro2018/20240808_atac_lsi_HetData.dat",
-    load_checkpoint=False,
-    reweight_rarecell=False,
-    n_kl_warmup=10,
-    project_decoder=False,
-    promote_indep=False,
-    hidden_dims=50,
-    hsic_lam=0.1,
-    edgetype_specific_scale=True,
-    edgetype_specific_std=True,
-    edgetype_specific_bias=True,
-    nonneg=False,
-    adata_CG=None,
-    adata_CP=None,
-    get_adata: str = False,
+    batch_size: int=1_000_000,
+    n_batch_sampling: int=1,
+    output_dir: str = "rna",
+    data_path: str = None,
+    load_checkpoint: bool = False,
+    reweight_rarecell: bool = False,
+    n_kl_warmup: int = 10,
+    project_decoder: bool = False,
+    hidden_dims: int = 50,
+    hsic_lam: float = 0.0,
+    edgetype_specific_scale: bool = True,
+    edgetype_specific_std: bool = True,
+    edgetype_specific_bias: bool = True,
+    nonneg: bool = False,
+    adata_CG: str = None,
+    adata_CP: str = None,
+    get_adata: bool = False,
     pos_scale: bool = False,
+    scale_src: bool = True,
 ):
     """Train the model with the given parameters.
     If get_adata is True, it will only load the gene/peak/cell AnnData object from the checkpoint.
@@ -57,8 +92,16 @@ def run(
     ----------
 
     """
+    if pos_scale and scale_src:
+        scale_tag = ".ps"
+    elif pos_scale:
+        scale_tag = ".pd"
+    elif scale_src:
+        scale_tag = ".d"
+    else:
+        scale_tag = ""
     print(f"batch size: {batch_size}")
-    run_id = f"pl_{os.path.basename(data_path).split('_HetData.dat')[0]}_{human_format(batch_size)}{'x'+str(n_batch_sampling) if n_batch_sampling > 1 else ''}{'_' + str(layers) + 'layers' if layers > 1 else ''}_prox{'.noproj' if not project_decoder else ''}{'.rw' if reweight_rarecell else ''}{'.indep2_' + format(hsic_lam, '1.0e') if promote_indep else ''}{'.d' + str(hidden_dims) if hidden_dims != 50 else ''}{'.enss' if not edgetype_specific_scale else ''}{'.enst' if not edgetype_specific_std else ''}{'.ensb' if not edgetype_specific_bias else ''}{'.nn' if nonneg else ''}{'.ps' if pos_scale else ''}.randinit"
+    run_id = f"pl_{os.path.basename(data_path).split('_HetData.dat')[0]}_{human_format(batch_size)}{'x'+str(n_batch_sampling) if n_batch_sampling > 1 else ''}_prox{'.noproj' if not project_decoder else ''}{'.rw' if reweight_rarecell else ''}{'.indep2_' + format(hsic_lam, '1.0e') if hsic_lam != 0 else ''}{'.d' + str(hidden_dims) if hidden_dims != 50 else ''}{'.enss' if not edgetype_specific_scale else ''}{'.enst' if not edgetype_specific_std else ''}{'.ensb' if not edgetype_specific_bias else ''}{'.nn' if nonneg else ''}{scale_tag}.randinit"
     print(f"RUN ID: {run_id}")
     prefix = f"/data/pinello/PROJECTS/2022_12_GCPA/runs/{output_dir}/"
     checkpoint_dir = f"{prefix}/{run_id}.checkpoints/"
@@ -83,43 +126,69 @@ def run(
     if "multiome" in data_path and "motif" in data.node_types:
         edge_types = [
             ("cell", "has_accessible", "peak"),
-            ("cell", "expresses", "gene"),
+            ("cell", "expresses", "gene")
         ]
 
+    
+    torch.manual_seed(2025)
+    data_idx_path = f"{checkpoint_dir}/data_idx.pkl"
     train_data_dict = {}
     val_data_dict = {}
     test_data_dict = {}
+    if os.path.exists(data_idx_path):
+        # Load existing train/val/test split
+        with open(data_idx_path, "rb") as f:
+            saved_splits = pkl.load(f)
+            val_edge_index_dict = saved_splits["val"]
+            test_edge_index_dict = saved_splits["test"]
+            # Reconstruct train indices as complement of val+test
+            train_edge_index_dict = {}
+            for edge_type in edge_types:
+                edge_key = "__".join(edge_type)
+                all_edges = set(range(data[edge_type].num_edges))
+                val_test_edges = set(val_edge_index_dict[edge_key].tolist() + 
+                                   test_edge_index_dict[edge_key].tolist())
+                train_edges = list(all_edges - val_test_edges)
+                train_edge_index_dict[edge_key] = torch.tensor(train_edges)
+                train_data_dict[edge_type] = CustomIndexDataset(edge_type, train_edge_index_dict[edge_key])
+                val_data_dict[edge_type] = CustomIndexDataset(edge_type, val_edge_index_dict[edge_key])
+                test_data_dict[edge_type] = CustomIndexDataset(edge_type, test_edge_index_dict[edge_key])
+                
+    else:
+        for edge_type in edge_types:
+            num_edges = data[edge_type].num_edges
+            edge_index = data[edge_type].edge_index
+            src_nodes = edge_index[0]
+            dst_nodes = edge_index[1]
 
-    torch.manual_seed(2025)
-    for edge_type in edge_types:
-        num_edges = data[edge_type].num_edges
-        edge_index = data[edge_type].edge_index
-        src_nodes = edge_index[0]
-        dst_nodes = edge_index[1]
+            # Find indices that cover all source and target nodes
+            selected_indices = set()
 
-        # Find indices that cover all source and target nodes
-        selected_indices = set()
+            indices = torch.arange(num_edges)[torch.randperm(num_edges)]
+            print("Selecting source node")
+            selected_indices.update(np.unique(src_nodes[indices].cpu().numpy(), return_index=True)[1].tolist())
+            print("Selecting destination node")
+            selected_indices.update(np.unique(dst_nodes[indices].cpu().numpy(), return_index=True)[1].tolist())
+            print("Selected indices")
 
-        indices = torch.arange(num_edges)[torch.randperm(num_edges)]
-        print("Selecting source node")
-        selected_indices.update(np.unique(src_nodes[indices].cpu().numpy(), return_index=True)[1].tolist())
-        print("Selecting destination node")
-        selected_indices.update(np.unique(dst_nodes[indices].cpu().numpy(), return_index=True)[1].tolist())
-        print("Selected indices")
+            # Fill up to 90% for train, 5% for val
+            remaining_indices = [i for i in indices.cpu().numpy() if i not in selected_indices]
+            print("Got remaining indices")
+            train_size = int(num_edges * 0.9)
+            val_size = int(num_edges * 0.05)
+            selected_indices = list(selected_indices)
+            train_index = torch.tensor(selected_indices + remaining_indices[:train_size - len(selected_indices)])
+            val_index = torch.tensor(remaining_indices[(train_size - len(selected_indices)):(train_size - len(selected_indices) + val_size)])
+            test_index = torch.tensor(remaining_indices[(train_size - len(selected_indices) + val_size):])
 
-        # Fill up to 90% for train, 5% for val
-        remaining_indices = [i for i in indices.cpu().numpy() if i not in selected_indices]
-        print("Got remaining indices")
-        train_size = int(num_edges * 0.9)
-        val_size = int(num_edges * 0.05)
-        selected_indices = list(selected_indices)
-        train_index = torch.tensor(selected_indices + remaining_indices[:train_size - len(selected_indices)])
-        val_index = torch.tensor(remaining_indices[(train_size - len(selected_indices)):(train_size - len(selected_indices) + val_size)])
-        test_index = torch.tensor(remaining_indices[(train_size - len(selected_indices) + val_size):])
-
-        train_data_dict[edge_type] = CustomIndexDataset(edge_type, train_index)
-        val_data_dict[edge_type] = CustomIndexDataset(edge_type, val_index)
-        test_data_dict[edge_type] = CustomIndexDataset(edge_type, test_index)
+            train_data_dict[edge_type] = CustomIndexDataset(edge_type, train_index)
+            val_data_dict[edge_type] = CustomIndexDataset(edge_type, val_index)
+            test_data_dict[edge_type] = CustomIndexDataset(edge_type, test_index)
+        train_edge_index_dict = {"__".join(edge_type):train_data_dict[edge_type].index for edge_type in edge_types}
+        val_edge_index_dict = {"__".join(edge_type):val_data_dict[edge_type].index for edge_type in edge_types}
+        test_edge_index_dict = {"__".join(edge_type):test_data_dict[edge_type].index for edge_type in edge_types}
+        with open(data_idx_path, "wb") as f:
+            pkl.dump({"val":val_edge_index_dict, "test":test_edge_index_dict}, f)
 
     def collate(data):
         types, idxs = zip(*data)
@@ -201,7 +270,7 @@ def run(
     )
     print(f"NLLSCALE:{nll_scale}, {val_nll_scale}")
 
-    if promote_indep:
+    if hsic_lam != 0:
         cell_edge_types = []
         for edge_type in edge_types:
             if edge_type[0] == "cell" or edge_type[1] == "cell":
@@ -214,11 +283,7 @@ def run(
         )
     else:
         hsic = None
-    train_edge_index_dict = {"__".join(edge_type):train_data_dict[edge_type].index for edge_type in edge_types}
-    val_edge_index_dict = {"__".join(edge_type):val_data_dict[edge_type].index for edge_type in edge_types}
-    test_edge_index_dict = {"__".join(edge_type):test_data_dict[edge_type].index for edge_type in edge_types}
-    with open(f"{checkpoint_dir}/data_idx.pkl", "wb") as f:
-        pkl.dump({"val":val_edge_index_dict, "test":test_edge_index_dict}, f)
+    
     
     rpvgae = LightningProxModel(
         data,
@@ -227,7 +292,6 @@ def run(
         n_latent_dims=dim_u,
         device=device,
         num_neg_samples_fold=num_neg_samples_fold,
-        num_layers=layers,
         project_decoder=project_decoder,
         edgetype_specific_scale=edgetype_specific_scale,
         edgetype_specific_std=edgetype_specific_std,
@@ -243,6 +307,7 @@ def run(
         positive_scale=pos_scale,
         train_data_dict = train_edge_index_dict,
         val_data_dict = val_edge_index_dict,
+        decoder_scale_src=scale_src,
     ).to(device)
 
     def train(
@@ -268,7 +333,6 @@ def run(
                 "n_kl_warmup": n_kl_warmup,
                 "n_count_nodes": n_count_nodes,
                 "early_stopping_steps": early_stopping_steps,
-                "promote_indep": promote_indep,
                 "HSIC_loss": hsic_lam,
                 "num_neg_samples_fold": num_neg_samples_fold,
                 "edgetype_specific_scale": edgetype_specific_scale,
@@ -433,9 +497,8 @@ def add_argument(parser):
     parser.add_argument("--batch-size", type=int, default=100_000, help="Batch size (number of edges) per DataLoader batch")
     parser.add_argument("--output-dir", type=str, default=".", help="Top-level output directory where run artifacts will be stored")
     parser.add_argument("--load-checkpoint", action="store_true", help="If set, resume training from the last checkpoint")
-    parser.add_argument("--promote-indep", action="store_true", help="Enable HSIC-based independence promotion between modalities")
     parser.add_argument("--hidden-dims", type=int, default=50, help="Dimensionality of hidden and latent embeddings")
-    parser.add_argument("--hsic-lam", type=float, default=0.01, help="HSIC regularization lambda (strength)")
+    parser.add_argument("--hsic-lam", type=float, default=0.0, help="HSIC regularization lambda (strength)")
     parser.add_argument("--get-adata", action="store_true", help="Only extract and save AnnData outputs from the last checkpoint and exit")
     parser.add_argument("--pos-scale", action="store_true", help="Use positive-only scaling for the mean of output distributions")
     return parser

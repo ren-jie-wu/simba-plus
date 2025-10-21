@@ -8,9 +8,6 @@ import simba_plus.load_data as load_data
 import simba_plus.train as train
 import simba_plus.evaluate as evaluate
 import simba_plus.heritability.create_report as create_heritability_report
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 def main():
