@@ -27,10 +27,16 @@ def download_url(url,
         miniters=1,
         desc=desc
     ) as t:
-        urllib.request.urlretrieve(
-            url,
-            filename=output_path,
-            reporthook=t.update_to)
+        try:
+            urllib.request.urlretrieve(
+                url,
+                filename=output_path,
+                reporthook=t.update_to)
+        except Exception as e:
+            print(f"Error downloading {url}: {e}")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            raise e
 
 
 def rna_10xpmbc3k():
@@ -497,3 +503,63 @@ def multiome_bmmc():
     dict_adata = {'rna': adata_rna,
                   'atac': adata_atac}
     return dict_adata
+
+def extract_tarfile(tar_path, extract_path=None):
+    import tarfile
+    if extract_path is None:
+        extract_path = tar_path.rstrip('.tgz')
+        os.makedirs(extract_path)
+    try:
+    # Open the .tgz file in read mode ('r:gz' for gzipped tar files)
+        with tarfile.open(tar_path, 'r:gz') as tar:
+            # Extract all contents to the specified destination directory
+            tar.extractall(extract_path)
+            print(f"Successfully extracted '{tar_path}' to '{extract_path}'")
+    except tarfile.ReadError as e:
+        print(f"Error opening or reading tar file: {e}")
+    except FileNotFoundError:
+        print(f"Error: The file '{tar_path}' was not found.")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+
+def heritability():
+    """placeholder for heritability dataset loader
+
+    Returns
+    -------
+    None
+    """
+    url_baseline = "https://zenodo.org/records/10515792/files/1000G_Phase3_baselineLD_v2.2_ldscores.tgz?download=1"
+    url_weights_hm3 = "https://zenodo.org/records/10515792/files/1000G_Phase3_EAS_weights_hm3_no_MHC.tgz?download=1"
+    url_frqfile = "https://zenodo.org/records/10515792/files/1000G_Phase3_frq.tgz?download=1"
+    filepath_prefix = os.path.join(os.path.dirname(__file__), "ldsc_data/")
+    fullpath_baseline = os.path.join(filepath_prefix, "1000G_Phase3_baselineLD_v2.2_ldscores.tgz")
+    fullpath_weights_hm3 = os.path.join(filepath_prefix, "1000G_Phase3_EAS_weights_hm3_no_MHC.tgz")
+    fullpath_frqfile = os.path.join(filepath_prefix, "1000G_Phase3_frq.tgz")
+    if not os.path.exists(filepath_prefix):
+        os.makedirs(filepath_prefix)
+    if not os.path.exists(fullpath_baseline.split(".tgz")[0]):
+        if not os.path.exists(fullpath_baseline):
+            print(f'Downloading baseline LD scores to {fullpath_baseline}...')
+            download_url(url_baseline,
+                        fullpath_baseline,
+                        desc="baselineLD_v2.2_ldscores.tgz")
+        extract_tarfile(fullpath_baseline)
+        print(f'Downloaded to {fullpath_baseline}.')
+    if not os.path.exists(fullpath_weights_hm3.split(".tgz")[0]):
+        if not os.path.exists(fullpath_weights_hm3):
+            print(f'Downloading weights hm3 to {fullpath_weights_hm3}...')
+            download_url(url_weights_hm3,
+                        fullpath_weights_hm3,
+                        desc="weights_hm3_no_MHC.tgz")
+        extract_tarfile(fullpath_weights_hm3)
+        print(f'Downloaded to {fullpath_weights_hm3}.')
+    if not os.path.exists(fullpath_frqfile.split(".tgz")[0]):
+        if not os.path.exists(fullpath_frqfile):    
+            print(f'Downloading frq file to {fullpath_frqfile}...')
+            download_url(url_frqfile,
+                        fullpath_frqfile,
+                        desc="frq.tgz")
+        extract_tarfile(fullpath_frqfile)
+        print(f'Downloaded to {fullpath_frqfile}.')
+    

@@ -173,6 +173,37 @@ class HSIC(nn.Module):
         return hsic_total
 
 
+class SumstatResidualLoss(nn.Module):
+    """
+    Constrain peak loading to maximally explain the sumstat residuals.
+    """
+
+    def __init__(
+        self,
+        residuals: torch.Tensor,
+    ):
+        """
+        Initialize SumstatResidualLoss with residuals.
+
+        Args:
+            residuals (torch.Tensor): Residuals tensor
+        """
+        super(SumstatResidualLoss, self).__init__()
+        self.y = residuals
+
+    def forward(self, L, idx):
+        L_normed = L[idx, :] / torch.norm(L[idx, :], dim=0, keepdim=True)
+        loss = (
+            (
+                self.y[idx]
+                - L_normed @ torch.linalg.lstsq(L_normed, self.y[idx]).solution
+            )
+            .pow(2)
+            .mean()
+        )
+        return loss
+
+
 def weighted_mse_loss(pred, target, weight=None):
     weight = 1.0 if weight is None else weight[target].to(pred.dtype)
     return (weight * (pred - target.to(pred.dtype)).pow(2)).mean()

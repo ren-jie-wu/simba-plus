@@ -4,6 +4,7 @@ import torch
 from torch_geometric.data import HeteroData
 from torch_geometric.utils.num_nodes import maybe_num_nodes
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
+import os
 
 
 def negative_sampling(edge_index, num_nodes, num_neg_samples_fold=2):
@@ -103,3 +104,26 @@ def structured_negative_sampling(
         rest = rest[mask]
 
     return edge_index[0], edge_index[1], rand.to(edge_index.device)
+
+
+def write_bed(adata, filename=None):
+    """Write peaks into .bed file
+
+    Parameters
+    ----------
+    adata: AnnData
+        Annotated data matrix with peaks as variables.
+    use_top_pcs: `bool`, optional (default: True)
+        Use top-PCs-associated features
+    filename: `str`, optional (default: None)
+        Filename name for peaks.
+        By default, a file named 'peaks.bed' will be written to
+        `.settings.workdir`
+    """
+    for x in ["chr", "start", "end"]:
+        if x not in adata.var_keys():
+            raise ValueError(f"could not find {x} in `adata.var_keys()`")
+    peaks_selected = adata.var[["chr", "start", "end"]]
+    peaks_selected.to_csv(filename, sep="\t", header=False, index=False)
+    fp, fn = os.path.split(filename)
+    print(f'"{fn}" was written to "{fp}".')

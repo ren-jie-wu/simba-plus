@@ -1,5 +1,7 @@
 import os
 import logging
+from typing import Optional
+import pandas as pd
 from datetime import datetime
 from itertools import chain
 import argparse
@@ -21,9 +23,11 @@ import wandb
 import scanpy as sc
 import simba_plus.load_data
 from simba_plus.encoders import TransEncoder
-from simba_plus.losses import HSIC
+from simba_plus.losses import HSIC, SumstatResidualLoss
 from simba_plus.loader import CustomIndexDataset
+from simba_plus.utils import write_bed
 from simba_plus.utils import MyEarlyStopping, negative_sampling
+from simba_plus.heritability.get_residual import get_residual, get_overlap
 import torch.multiprocessing
 
 
@@ -86,6 +90,7 @@ def run(
     get_adata: bool = False,
     pos_scale: bool = False,
     scale_src: bool = True,
+    ldsc_res: Optional[pd.DataFrame] = None,
 ):
     """Train the model with the given parameters.
     If get_adata is True, it will only load the gene/peak/cell AnnData object from the checkpoint.
@@ -332,6 +337,17 @@ def run(
         )
     else:
         hsic = None
+    if ldsc_res is not None:
+        logger.info(
+            f"Using provided LD score regression residuals from {ldsc_res} for scaling..."
+        )
+        adata_CP_ = ad.read_h5ad(adata_CP)
+        peak_to_snp_overlap = get_overlap(ldsc_res, adata_CP_.var)
+        print(ldsc_res.values.shape, peak_to_snp_overlap.shape)
+        peak_res = peak_to_snp_overlap @ ldsc_res.values[:, 3:] # n_peaks x n_sumstatss
+        herit_loss = SumstatResidualLoss(peak_res)
+    else:
+        herit_loss = None
 
     rpvgae = LightningProxModel(
         data,
@@ -345,6 +361,7 @@ def run(
         edgetype_specific_std=edgetype_specific_std,
         edgetype_specific_bias=edgetype_specific_bias,
         hsic=hsic,
+        herit_loss=herit_loss,
         n_no_kl=1,
         n_count_nodes=20,
         n_kl_warmup=n_kl_warmup,
@@ -547,9 +564,25 @@ def save_files(
     adata_P.write(f"{run_id}.checkpoints/adata_P.h5ad")
 
 
+def check_args(args):
+    if args.ldsc_res is not None:
+        if not os.path.exists(args.ldsc_res):
+            raise ValueError(f"LD score regression residuals file --ldsc-res {args.ldsc_res} not found.")
+        if args.adata_CP is None:
+            raise ValueError("--adata-CP must be provided when using --ldsc-res.")
+
 def main(args):
+    check_args(args)
     kwargs = vars(args)
     del kwargs["subcommand"]
+    if args.ldsc_res is not None:
+        residuals = get_residual(
+            sumstat_list_path=args.ldsc_res,
+            output_path=f"{args.output_dir}/ldsc_residuals/",
+            rerun=False,
+            nproc=10,
+        )
+        kwargs["ldsc_res"] = residuals
     run(**kwargs)
 
 
@@ -581,6 +614,12 @@ def add_argument(parser):
         type=str,
         default=".",
         help="Top-level output directory where run artifacts will be stored",
+    )
+    parser.add_argument(
+        "--ldsc-res",
+        type=str,
+        default=".",
+        help="LD score regression residuals output paths, one per line.",
     )
     parser.add_argument(
         "--load-checkpoint",
@@ -617,6 +656,7 @@ def add_argument(parser):
     )
 
     return parser
+
 
 
 if __name__ == "__main__":

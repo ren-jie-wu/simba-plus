@@ -45,7 +45,9 @@ class LightningProxModel(L.LightningModule):
         edgetype_specific_scale: bool = True,
         edgetype_specific_std: bool = True,
         edge_types: Optional[Tuple[str]] = None,
-        hsic: nn.Module = None,
+        hsic: Optional[nn.Module] = None,
+        herit_loss: Optional[nn.Module] = None,
+        herit_loss_lam: float = 1.0,
         n_no_kl: int = 1,
         n_count_nodes: int = 20,
         n_kl_warmup: int = 50,
@@ -116,7 +118,8 @@ class LightningProxModel(L.LightningModule):
         }
 
         self.node_weights_dict = node_weights_dict
-
+        self.herit_loss = herit_loss
+        self.herit_loss_lam = herit_loss_lam
         # Batch correction for RNA-seq data
         self.bias_dict = nn.ParameterDict()
         self.scale_dict = nn.ParameterDict()
@@ -515,7 +518,21 @@ class LightningProxModel(L.LightningModule):
             ) / (self.n_kl_warmup - self.n_no_kl)
         else:
             batch_kl_div_loss = 0.0
-
+        if self.herit_loss is not None:
+            t0 = time.time()
+            herit_loss_value = self.herit_loss(
+                mu_dict["peak"][batch["peak"].n_id],
+                batch["peak"].n_id,
+            )
+            t1 = time.time()
+            self.log("time:herit_loss", t1 - t0, on_step=True, on_epoch=False)
+            self.log(
+                "herit_loss",
+                herit_loss_value,
+                batch_size=batch["cell"].num_edges,
+                on_step=False,
+                on_epoch=True,
+            )
         self.log(
             "nll_loss",
             batch_nll_loss * self.nll_scale,
@@ -538,7 +555,11 @@ class LightningProxModel(L.LightningModule):
             on_step=False,
             on_epoch=True,
         )
-        loss = batch_nll_loss * self.nll_scale + batch_kl_div_loss
+        loss = (
+            batch_nll_loss * self.nll_scale
+            + batch_kl_div_loss
+            + self.herit_loss_lam * herit_loss_value
+        )
         self.log(
             "loss",
             loss,
@@ -586,6 +607,21 @@ class LightningProxModel(L.LightningModule):
             on_step=False,
             on_epoch=True,
         )
+        if self.herit_loss is not None:
+            t0 = time.time()
+            herit_loss_value = self.herit_loss(
+                mu_dict["peak"][batch["peak"].n_id],
+                batch["peak"].n_id,
+            )
+            t1 = time.time()
+            self.log("time:herit_loss", t1 - t0, on_step=True, on_epoch=False)
+            self.log(
+                "herit_loss",
+                herit_loss_value,
+                batch_size=batch["cell"].num_edges,
+                on_step=False,
+                on_epoch=True,
+            )
         # Also log per-validation-step NLL (so we can monitor batch-level val NLL)
         self.log(
             "val_nll_loss_step",
