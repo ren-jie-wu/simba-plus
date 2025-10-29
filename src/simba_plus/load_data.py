@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch_geometric.data import HeteroData
 import anndata as ad
-from simba_plus.utils import _assign_node_id, _make_tensor
+from simba_plus.utils import _make_tensor
 import argparse
 
 
@@ -111,7 +111,7 @@ def make_sc_HetData(
 
 def load_from_path(path: str, device="cpu") -> HeteroData:
     data = torch.load(path, map_location=device, weights_only=False)
-    _assign_node_id(data)
+    data.generate_ids()
     _make_tensor(data, device=device)
     return data
 

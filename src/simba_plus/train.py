@@ -3,20 +3,15 @@ import logging
 from typing import Optional
 import pandas as pd
 from datetime import datetime
-from itertools import chain
 import argparse
-import pickle as pkl
-from tqdm import tqdm
 import anndata as ad
 import numpy as np
 from simba_plus.model_prox import LightningProxModel
 import torch
-from torch.utils.data import DataLoader
 import torch_geometric
-from torch_geometric.transforms.to_device import ToDevice
 import lightning as L
 from lightning.pytorch.tuner import Tuner
-from torch_geometric.transforms.remove_isolated_nodes import RemoveIsolatedNodes
+
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.loggers import WandbLogger
 import wandb
@@ -24,13 +19,16 @@ import scanpy as sc
 import simba_plus.load_data
 from simba_plus.encoders import TransEncoder
 from simba_plus.losses import HSIC, SumstatResidualLoss
-from simba_plus.loader import CustomIndexDataset, CustomMultiIndexDataset
-from simba_plus.utils import write_bed
-from simba_plus.utils import MyEarlyStopping, negative_sampling
+
+from simba_plus.utils import (
+    MyEarlyStopping,
+    get_edge_split_datamodule,
+    get_node_weights,
+    get_nll_scales,
+)
 from simba_plus.heritability.get_residual import (
     get_residual,
     get_peak_residual,
-    get_overlap,
 )
 import torch.multiprocessing
 
@@ -81,6 +79,7 @@ def run(
     load_checkpoint: bool = False,
     checkpoint_suffix: str = "",
     reweight_rarecell: bool = False,
+    n_no_kl: int = 0,
     n_kl_warmup: int = 1,
     project_decoder: bool = False,
     hidden_dims: int = 50,
@@ -144,222 +143,27 @@ def run(
     if "peak" in data.node_types and "gene" in data.node_types:
         edge_types = [("cell", "has_accessible", "peak"), ("cell", "expresses", "gene")]
 
-    torch.manual_seed(2025)
-    data_idx_path = f"{checkpoint_dir}/data_idx.pkl"
-    # train_data_dict = {}
-    # val_data_dict = {}
-    # test_data_dict = {}
-    train_idxs = []
-    val_idxs = []
-    if os.path.exists(data_idx_path):
-        # Load existing train/val/test split
-        with open(data_idx_path, "rb") as f:
-            saved_splits = pkl.load(f)
-            val_edge_index_dict = saved_splits["val"]
-            test_edge_index_dict = saved_splits["test"]
-            # Reconstruct train indices as complement of val+test
-            train_edge_index_dict = {}
-            for edge_type in edge_types:
-                edge_key = "__".join(edge_type)
-                all_edges = set(range(data[edge_type].num_edges))
-                val_test_edges = set(
-                    val_edge_index_dict[edge_key].tolist()
-                    + test_edge_index_dict[edge_key].tolist()
-                )
-                train_edges = list(all_edges - val_test_edges)
-                train_edge_index_dict[edge_key] = torch.tensor(train_edges)
-                # train_data_dict[edge_type] = CustomIndexDataset(
-                #     edge_type, train_edge_index_dict[edge_key]
-                # )
-                # val_data_dict[edge_type] = CustomIndexDataset(
-                #     edge_type, val_edge_index_dict[edge_key]
-                # )
-                # test_data_dict[edge_type] = CustomIndexDataset(
-                #     edge_type, test_edge_index_dict[edge_key]
-                # )
-                train_idxs.append(train_edge_index_dict[edge_key])
-                val_idxs.append(val_edge_index_dict[edge_key])
-        train_data = CustomMultiIndexDataset(edge_types, train_idxs)
-        val_data = CustomMultiIndexDataset(edge_types, val_idxs)
-    else:
-        for edge_type in edge_types:
-            num_edges = data[edge_type].num_edges
-            edge_index = data[edge_type].edge_index
-            src_nodes = edge_index[0]
-            dst_nodes = edge_index[1]
-
-            # Find indices that cover all source and target nodes
-            selected_indices = set()
-
-            indices = torch.arange(num_edges)[torch.randperm(num_edges)]
-            logger.info("Selecting source node")
-            selected_indices.update(
-                np.unique(src_nodes[indices].cpu().numpy(), return_index=True)[
-                    1
-                ].tolist()
-            )
-            logger.info("Selecting destination node")
-            selected_indices.update(
-                np.unique(dst_nodes[indices].cpu().numpy(), return_index=True)[
-                    1
-                ].tolist()
-            )
-            logger.info("Selected indices")
-
-            # Fill up to 90% for train, 5% for val
-            remaining_indices = [
-                i for i in indices.cpu().numpy() if i not in selected_indices
-            ]
-            logger.info("Got remaining indices")
-            train_size = int(num_edges * 0.9)
-            val_size = int(num_edges * 0.05)
-            selected_indices = list(selected_indices)
-            train_index = torch.tensor(
-                selected_indices
-                + remaining_indices[: train_size - len(selected_indices)]
-            )
-            val_index = torch.tensor(
-                remaining_indices[
-                    (train_size - len(selected_indices)) : (
-                        train_size - len(selected_indices) + val_size
-                    )
-                ]
-            )
-            test_index = torch.tensor(
-                remaining_indices[(train_size - len(selected_indices) + val_size) :]
-            )
-
-            # train_data_dict[edge_type] = CustomIndexDataset(edge_type, train_index)
-            # val_data_dict[edge_type] = CustomIndexDataset(edge_type, val_index)
-            # test_data_dict[edge_type] = CustomIndexDataset(edge_type, test_index)
-        train_edge_index_dict = {
-            "__".join(edge_type): train_data_dict[edge_type].index
-            for edge_type in edge_types
-        }
-        val_edge_index_dict = {
-            "__".join(edge_type): val_data_dict[edge_type].index
-            for edge_type in edge_types
-        }
-        test_edge_index_dict = {
-            "__".join(edge_type): test_data_dict[edge_type].index
-            for edge_type in edge_types
-        }
-        with open(data_idx_path, "wb") as f:
-            pkl.dump({"val": val_edge_index_dict, "test": test_edge_index_dict}, f)
-
-    def collate(idx, data=data):
-        batch = {}
-        for d in idx:
-            if d[0] not in batch:
-                batch[d[0]] = [d[1]]
-            else:
-                batch[d[0]].append(d[1])
-        # return {k: torch.tensor(v) for k, v in batch.items()}
-        return RemoveIsolatedNodes()(
-            data.edge_subgraph({k: torch.tensor(v) for k, v in batch.items()})
-        )
-
-    # train_loaders = [
-    #     DataLoader(
-    #         train_data_dict[edgetype],
-    #         batch_size=batch_size,
-    #         collate_fn=collate,
-    #         num_workers=10,
-    #     )
-    #     for edgetype in edge_types
-    # ]
-    # val_loaders = [
-    #     DataLoader(
-    #         val_data_dict[edgetype],
-    #         batch_size=batch_size,
-    #         collate_fn=collate,
-    #         num_workers=10,
-    #     )
-    #     for edgetype in edge_types
-    # ]
-    train_loader = DataLoader(
-        train_data, batch_size=batch_size, collate_fn=collate, num_workers=10
-    )
-    val_loader = DataLoader(
-        val_data, batch_size=batch_size, collate_fn=collate, num_workers=10
+    pldata = get_edge_split_datamodule(
+        data,
+        edge_types,
+        batch_size,
+        checkpoint_dir,
+        logger,
     )
 
-    node_counts_dict = {
-        node_type: torch.ones(x.shape[0], device=device)
-        for (node_type, x) in data.x_dict.items()
-    }
-
-    # Try to load previously saved node weights so training can resume with same reweighting
-    node_weights_path = os.path.join(checkpoint_dir, "node_weights_dict.pt")
-    if os.path.exists(node_weights_path):
-        try:
-            loaded = torch.load(node_weights_path, map_location="cpu")
-            # Convert loaded values to device tensors if needed
-            node_weights_dict = {
-                k: (
-                    v.to(device)
-                    if isinstance(v, torch.Tensor)
-                    else torch.tensor(v, device=device)
-                )
-                for k, v in loaded.items()
-            }
-            logger.info(f"Loaded node_weights_dict from {node_weights_path}")
-        except Exception as e:  # pragma: no cover - best-effort load
-            logger.info(
-                f"Failed to load node_weights_dict from {node_weights_path}: {e}"
-            )
-    else:
-        for train_loader in train_loaders:
-            for batch in tqdm(train_loader):
-                edge_type, label_index = batch
-                edge_type = tuple(edge_type)
-                batch = data.edge_subgraph({edge_type: label_index}).to(device)
-                src, _, dst = edge_type
-
-        node_weights_dict = {k: 1.0 / v for k, v in node_counts_dict.items()}
-        torch.save(node_weights_dict, node_weights_path)
-
-    class MyDataModule(L.LightningDataModule):
-        def __init__(self):
-            super().__init__()
-            self.train_loaders = train_loaders
-            self.val_loaders = val_loaders
-
-        def train_dataloader(self):
-            return chain.from_iterable(self.train_loaders)
-
-        def val_dataloader(self):
-            return chain.from_iterable(self.val_loaders)
-
-    class MyDataModule2(L.LightningDataModule):
-        def __init__(self):
-            super().__init__()
-            self.train_loaders = train_loader
-            self.val_loaders = val_loader
-
-        def train_dataloader(self):
-            return self.train_loaders
-
-        def val_dataloader(self):
-            return self.val_loaders
-
-    pldata = MyDataModule2()
-
-    # n_batches = sum([len(t) for t in train_loaders])
-    # n_val_batches = sum([len(t) for t in val_loaders])
-    n_batches = train_data.total_length // batch_size + 1
+    node_weights_dict = get_node_weights(data, pldata, checkpoint_dir, logger, device)
+    n_batches = len(pldata.train_loader) // batch_size + 1
     logger.info(f"@N_BATCHES:{n_batches}")
-    n_val_batches = val_data.total_length // batch_size + 1
-
-    n_dense_edges = 0
-    for src_nodetype, _, dst_nodetype in edge_types:
-        n_dense_edges += data[src_nodetype].num_nodes * data[dst_nodetype].num_nodes
-
-    nll_scale = n_dense_edges / ((num_neg_samples_fold + 1) * batch_size * n_batches)
-    val_nll_scale = n_dense_edges / (
-        (num_neg_samples_fold + 1) * batch_size * n_val_batches
+    n_val_batches = len(pldata.val_loader) // batch_size + 1
+    nll_scale, val_nll_scale = get_nll_scales(
+        data,
+        edge_types,
+        num_neg_samples_fold,
+        batch_size,
+        n_batches,
+        n_val_batches,
+        logger,
     )
-    logger.info(f"NLLSCALE:{nll_scale}, {val_nll_scale}")
 
     if hsic_lam != 0:
         cell_edge_types = []
@@ -383,43 +187,29 @@ def run(
     rpvgae = LightningProxModel(
         data,
         encoder_class=TransEncoder,
-        n_hidden_dims=dim_u,
         n_latent_dims=dim_u,
         device=device,
         num_neg_samples_fold=num_neg_samples_fold,
-        project_decoder=project_decoder,
         edgetype_specific_scale=edgetype_specific_scale,
         edgetype_specific_std=edgetype_specific_std,
         edgetype_specific_bias=edgetype_specific_bias,
         hsic=hsic,
         herit_loss=herit_loss,
-        n_no_kl=0,
-        n_count_nodes=20,
+        n_no_kl=n_no_kl,
         n_kl_warmup=n_kl_warmup,
         nll_scale=nll_scale,
         val_nll_scale=val_nll_scale,
         node_weights_dict=node_weights_dict,
         nonneg=nonneg,
         positive_scale=pos_scale,
-        train_data_dict=train_edge_index_dict,
-        val_data_dict=val_edge_index_dict,
         decoder_scale_src=scale_src,
     ).to(device)
 
     def train(
         rpvgae,
-        n_epochs=1000,
-        n_no_kl=1,
-        n_count_nodes=20,
-        n_kl_warmup=n_kl_warmup,
         early_stopping_steps=10,
-        loss_df=None,
-        counts_dicts=None,
-        hsic=None,
-        lr=1e-3,
         run_id="",
     ):
-        # wandb.init(project=f"pyg_simba_{output_dir.replace('/', '_')}")
         code_directory_path = os.path.dirname(os.path.abspath(__file__))
         wandb_logger = WandbLogger(project=f"pyg_simba_{output_dir.replace('/', '_')}")
         code_artifact = wandb.Artifact("my-python-code", type="code")
@@ -431,7 +221,6 @@ def run(
                 "batch_size": batch_size,
                 "n_no_kl": n_no_kl,
                 "n_kl_warmup": n_kl_warmup,
-                "n_count_nodes": n_count_nodes,
                 "early_stopping_steps": early_stopping_steps,
                 "HSIC_loss": hsic_lam,
                 "num_neg_samples_fold": num_neg_samples_fold,
@@ -491,11 +280,6 @@ def run(
 
     train(
         rpvgae,
-        n_epochs=2000,
-        n_kl_warmup=n_kl_warmup,
-        loss_df=loss_df,
-        counts_dicts=counts_dicts,
-        hsic=hsic if hsic is not None else None,
         run_id=run_id,
     )
     torch.save(rpvgae.state_dict(), f"{prefix}{run_id}.model")
@@ -694,7 +478,6 @@ def add_argument(parser):
 
 
 if __name__ == "__main__":
-    print("run 0")
     parser = argparse.ArgumentParser()
     parser = add_argument(parser)
     args = parser.parse_args()

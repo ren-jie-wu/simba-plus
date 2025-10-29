@@ -35,12 +35,10 @@ class LightningProxModel(L.LightningModule):
         self,
         data: HeteroData,
         encoder_class: torch.nn.Module = TransEncoder,
-        n_hidden_dims: int = 128,
         n_latent_dims: int = 50,
         decoder_class: torch.nn.Module = RelationalEdgeDistributionDecoder,
         device="cpu",
         num_neg_samples_fold: int = 1,
-        project_decoder: bool = True,
         edgetype_specific_bias: bool = True,
         edgetype_specific_scale: bool = True,
         edgetype_specific_std: bool = True,
@@ -49,8 +47,7 @@ class LightningProxModel(L.LightningModule):
         herit_loss: Optional[nn.Module] = None,
         herit_loss_lam: float = 1,
         n_no_kl: int = 1,
-        n_count_nodes: int = 20,
-        n_kl_warmup: int = 50,
+        n_kl_warmup: int = 0,
         nll_scale: float = 1.0,
         val_nll_scale: float = 1.0,
         learning_rate=1e-2,
@@ -59,8 +56,6 @@ class LightningProxModel(L.LightningModule):
         reweight_rarecell: bool = False,
         reweight_rarecell_neighbors: Optional[int] = None,
         positive_scale: bool = False,
-        train_data_dict: Optional[Dict[EdgeType, Tensor]] = None,
-        val_data_dict: Optional[Dict[EdgeType, Tensor]] = None,
         decoder_scale_src: bool = True,
     ):
         super().__init__()
@@ -71,7 +66,6 @@ class LightningProxModel(L.LightningModule):
         self.learning_rate = learning_rate
         self.encoder = encoder_class(
             data,
-            n_hidden_dims,
             n_latent_dims,
         )
         self.decoder = decoder_class(
@@ -79,7 +73,6 @@ class LightningProxModel(L.LightningModule):
             n_latent_dims,
             n_latent_dims,
             device=device,
-            project=project_decoder,
             edgetype_specific_bias=edgetype_specific_bias,
             edgetype_specific_scale=edgetype_specific_scale,
             edgetype_specific_std=edgetype_specific_std,
@@ -92,14 +85,12 @@ class LightningProxModel(L.LightningModule):
                 self.encoder.parameters(), lr=hsic.lam
             )
         self.n_no_kl = n_no_kl
-        self.n_count_nodes = n_count_nodes
         self.n_kl_warmup = n_kl_warmup
         self.nll_scale = nll_scale
         self.val_nll_scale = val_nll_scale
         self.num_nodes_dict = {
             node_type: x.shape[0] for (node_type, x) in data.x_dict.items()
         }
-        self.train_data_dict = train_data_dict
         self.reweight_rarecell = reweight_rarecell
         if self.reweight_rarecell:
             self.cell_weights = torch.ones(data["cell"].num_nodes, device=device)
