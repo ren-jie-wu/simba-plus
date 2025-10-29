@@ -21,7 +21,7 @@ jobs:
 
       - name: Install build / test dependencies
         run: |
-          apt-get install bedtools
+          sudo apt-get install bedtools
           python -m pip install --upgrade pip setuptools wheel
           pip install -e .
           pip install pytest pdoc
