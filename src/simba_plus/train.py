@@ -485,7 +485,7 @@ def add_argument(parser):
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=30,
+        default=10,
         help="Number of worker processes for data loading",
     )
     parser.add_argument(

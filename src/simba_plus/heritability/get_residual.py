@@ -136,7 +136,7 @@ def get_peak_residual(
         f"Using provided LD score regression residuals from {ldsc_res} for scaling..."
     )
     peak_res_path = os.path.join(checkpoint_dir, "peak_res.npy")
-    if os.path.exists(peak_res_path):
+    if False:  # os.path.exists(peak_res_path):
         logger.info(f"Loading peak_res from {peak_res_path}")
         peak_res = np.load(peak_res_path)
     else:
