@@ -396,7 +396,7 @@ def main(args):
     if args.sumstats is not None:
         residuals = get_residual(
             sumstat_list_path=args.sumstats,
-            output_path=f"{args.output_dir}/ldsc_residuals/",
+            output_path=f"{os.path.dirname(args.sumstats)}/ldsc_residuals/",
             rerun=False,
             nproc=10,
         )

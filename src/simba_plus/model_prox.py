@@ -46,8 +46,8 @@ class LightningProxModel(L.LightningModule):
         hsic: Optional[nn.Module] = None,
         herit_loss: Optional[nn.Module] = None,
         herit_loss_lam: float = 1,
-        n_no_kl: int = 1,
-        n_kl_warmup: int = 0,
+        n_no_kl: int = 0,
+        n_kl_warmup: int = 1,
         nll_scale: float = 1.0,
         val_nll_scale: float = 1.0,
         learning_rate=1e-2,
@@ -500,7 +500,7 @@ class LightningProxModel(L.LightningModule):
             t1 = time.time()
             self.log("time:kl_div_loss", t1 - t0, on_step=True, on_epoch=False)
             batch_kl_div_loss *= min(
-                self.current_epoch, self.n_kl_warmup - self.n_no_kl
+                self.current_epoch + 1, self.n_kl_warmup - self.n_no_kl
             ) / (self.n_kl_warmup - self.n_no_kl)
         else:
             batch_kl_div_loss = 0.0
