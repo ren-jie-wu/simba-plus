@@ -16,7 +16,7 @@ import torch_geometric
 from torch_geometric.transforms.to_device import ToDevice
 import lightning as L
 from lightning.pytorch.tuner import Tuner
-
+from torch_geometric.transforms.remove_isolated_nodes import RemoveIsolatedNodes
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.loggers import WandbLogger
 import wandb
@@ -24,10 +24,14 @@ import scanpy as sc
 import simba_plus.load_data
 from simba_plus.encoders import TransEncoder
 from simba_plus.losses import HSIC, SumstatResidualLoss
-from simba_plus.loader import CustomIndexDataset
+from simba_plus.loader import CustomIndexDataset, CustomMultiIndexDataset
 from simba_plus.utils import write_bed
 from simba_plus.utils import MyEarlyStopping, negative_sampling
-from simba_plus.heritability.get_residual import get_residual, get_overlap
+from simba_plus.heritability.get_residual import (
+    get_residual,
+    get_peak_residual,
+    get_overlap,
+)
 import torch.multiprocessing
 
 
@@ -77,7 +81,7 @@ def run(
     load_checkpoint: bool = False,
     checkpoint_suffix: str = "",
     reweight_rarecell: bool = False,
-    n_kl_warmup: int = 10,
+    n_kl_warmup: int = 1,
     project_decoder: bool = False,
     hidden_dims: int = 50,
     hsic_lam: float = 0.0,
@@ -108,7 +112,7 @@ def run(
         scale_tag = ""
     run_id = f"pl_{os.path.basename(data_path).split('_HetData.dat')[0]}_{human_format(batch_size)}{'x'+str(n_batch_sampling) if n_batch_sampling > 1 else ''}_prox{'.noproj' if not project_decoder else ''}{'.rw' if reweight_rarecell else ''}{'.indep2_' + format(hsic_lam, '1.0e') if hsic_lam != 0 else ''}{'.d' + str(hidden_dims) if hidden_dims != 50 else ''}{'.enss' if not edgetype_specific_scale else ''}{'.enst' if not edgetype_specific_std else ''}{'.ensb' if not edgetype_specific_bias else ''}{'.nn' if nonneg else ''}{scale_tag}.randinit"
 
-    prefix = f"/data/pinello/PROJECTS/2022_12_GCPA/runs/{output_dir}/"
+    prefix = f"{output_dir}/"
     checkpoint_dir = f"{prefix}/{run_id}.checkpoints/"
     logger = setup_logging(checkpoint_dir)
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -137,14 +141,16 @@ def run(
     counts_dicts = None
 
     edge_types = data.edge_types
-    if "multiome" in data_path and "motif" in data.node_types:
+    if "peak" in data.node_types and "gene" in data.node_types:
         edge_types = [("cell", "has_accessible", "peak"), ("cell", "expresses", "gene")]
 
     torch.manual_seed(2025)
     data_idx_path = f"{checkpoint_dir}/data_idx.pkl"
-    train_data_dict = {}
-    val_data_dict = {}
-    test_data_dict = {}
+    # train_data_dict = {}
+    # val_data_dict = {}
+    # test_data_dict = {}
+    train_idxs = []
+    val_idxs = []
     if os.path.exists(data_idx_path):
         # Load existing train/val/test split
         with open(data_idx_path, "rb") as f:
@@ -162,16 +168,19 @@ def run(
                 )
                 train_edges = list(all_edges - val_test_edges)
                 train_edge_index_dict[edge_key] = torch.tensor(train_edges)
-                train_data_dict[edge_type] = CustomIndexDataset(
-                    edge_type, train_edge_index_dict[edge_key]
-                )
-                val_data_dict[edge_type] = CustomIndexDataset(
-                    edge_type, val_edge_index_dict[edge_key]
-                )
-                test_data_dict[edge_type] = CustomIndexDataset(
-                    edge_type, test_edge_index_dict[edge_key]
-                )
-
+                # train_data_dict[edge_type] = CustomIndexDataset(
+                #     edge_type, train_edge_index_dict[edge_key]
+                # )
+                # val_data_dict[edge_type] = CustomIndexDataset(
+                #     edge_type, val_edge_index_dict[edge_key]
+                # )
+                # test_data_dict[edge_type] = CustomIndexDataset(
+                #     edge_type, test_edge_index_dict[edge_key]
+                # )
+                train_idxs.append(train_edge_index_dict[edge_key])
+                val_idxs.append(val_edge_index_dict[edge_key])
+        train_data = CustomMultiIndexDataset(edge_types, train_idxs)
+        val_data = CustomMultiIndexDataset(edge_types, val_idxs)
     else:
         for edge_type in edge_types:
             num_edges = data[edge_type].num_edges
@@ -220,9 +229,9 @@ def run(
                 remaining_indices[(train_size - len(selected_indices) + val_size) :]
             )
 
-            train_data_dict[edge_type] = CustomIndexDataset(edge_type, train_index)
-            val_data_dict[edge_type] = CustomIndexDataset(edge_type, val_index)
-            test_data_dict[edge_type] = CustomIndexDataset(edge_type, test_index)
+            # train_data_dict[edge_type] = CustomIndexDataset(edge_type, train_index)
+            # val_data_dict[edge_type] = CustomIndexDataset(edge_type, val_index)
+            # test_data_dict[edge_type] = CustomIndexDataset(edge_type, test_index)
         train_edge_index_dict = {
             "__".join(edge_type): train_data_dict[edge_type].index
             for edge_type in edge_types
@@ -238,28 +247,42 @@ def run(
         with open(data_idx_path, "wb") as f:
             pkl.dump({"val": val_edge_index_dict, "test": test_edge_index_dict}, f)
 
-    def collate(data):
-        types, idxs = zip(*data)
-        return tuple(types[0]), torch.tensor(idxs)
+    def collate(idx, data=data):
+        batch = {}
+        for d in idx:
+            if d[0] not in batch:
+                batch[d[0]] = [d[1]]
+            else:
+                batch[d[0]].append(d[1])
+        # return {k: torch.tensor(v) for k, v in batch.items()}
+        return RemoveIsolatedNodes()(
+            data.edge_subgraph({k: torch.tensor(v) for k, v in batch.items()})
+        )
 
-    train_loaders = [
-        DataLoader(
-            train_data_dict[edgetype],
-            batch_size=batch_size,
-            collate_fn=collate,
-            num_workers=10,
-        )
-        for edgetype in edge_types
-    ]
-    val_loaders = [
-        DataLoader(
-            val_data_dict[edgetype],
-            batch_size=batch_size,
-            collate_fn=collate,
-            num_workers=10,
-        )
-        for edgetype in edge_types
-    ]
+    # train_loaders = [
+    #     DataLoader(
+    #         train_data_dict[edgetype],
+    #         batch_size=batch_size,
+    #         collate_fn=collate,
+    #         num_workers=10,
+    #     )
+    #     for edgetype in edge_types
+    # ]
+    # val_loaders = [
+    #     DataLoader(
+    #         val_data_dict[edgetype],
+    #         batch_size=batch_size,
+    #         collate_fn=collate,
+    #         num_workers=10,
+    #     )
+    #     for edgetype in edge_types
+    # ]
+    train_loader = DataLoader(
+        train_data, batch_size=batch_size, collate_fn=collate, num_workers=10
+    )
+    val_loader = DataLoader(
+        val_data, batch_size=batch_size, collate_fn=collate, num_workers=10
+    )
 
     node_counts_dict = {
         node_type: torch.ones(x.shape[0], device=device)
@@ -308,11 +331,25 @@ def run(
         def val_dataloader(self):
             return chain.from_iterable(self.val_loaders)
 
-    pldata = MyDataModule()
+    class MyDataModule2(L.LightningDataModule):
+        def __init__(self):
+            super().__init__()
+            self.train_loaders = train_loader
+            self.val_loaders = val_loader
 
-    n_batches = sum([len(t) for t in train_loaders])
-    n_val_batches = sum([len(t) for t in val_loaders])
+        def train_dataloader(self):
+            return self.train_loaders
+
+        def val_dataloader(self):
+            return self.val_loaders
+
+    pldata = MyDataModule2()
+
+    # n_batches = sum([len(t) for t in train_loaders])
+    # n_val_batches = sum([len(t) for t in val_loaders])
+    n_batches = train_data.total_length // batch_size + 1
     logger.info(f"@N_BATCHES:{n_batches}")
+    n_val_batches = val_data.total_length // batch_size + 1
 
     n_dense_edges = 0
     for src_nodetype, _, dst_nodetype in edge_types:
@@ -338,14 +375,8 @@ def run(
     else:
         hsic = None
     if ldsc_res is not None:
-        logger.info(
-            f"Using provided LD score regression residuals from {ldsc_res} for scaling..."
-        )
-        adata_CP_ = ad.read_h5ad(adata_CP)
-        peak_to_snp_overlap = get_overlap(ldsc_res, adata_CP_.var)
-        print(ldsc_res.values.shape, peak_to_snp_overlap.shape)
-        peak_res = peak_to_snp_overlap @ ldsc_res.values[:, 3:] # n_peaks x n_sumstatss
-        herit_loss = SumstatResidualLoss(peak_res)
+        peak_res = get_peak_residual(ldsc_res, adata_CP, checkpoint_dir, logger)
+        herit_loss = SumstatResidualLoss(peak_res, device)
     else:
         herit_loss = None
 
@@ -362,7 +393,7 @@ def run(
         edgetype_specific_bias=edgetype_specific_bias,
         hsic=hsic,
         herit_loss=herit_loss,
-        n_no_kl=1,
+        n_no_kl=0,
         n_count_nodes=20,
         n_kl_warmup=n_kl_warmup,
         nll_scale=nll_scale,
@@ -380,7 +411,7 @@ def run(
         n_epochs=1000,
         n_no_kl=1,
         n_count_nodes=20,
-        n_kl_warmup=50,
+        n_kl_warmup=n_kl_warmup,
         early_stopping_steps=10,
         loss_df=None,
         counts_dicts=None,
@@ -388,13 +419,12 @@ def run(
         lr=1e-3,
         run_id="",
     ):
-        wandb.init(project=f"pyg_simba_{output_dir.replace('/', '_')}")
+        # wandb.init(project=f"pyg_simba_{output_dir.replace('/', '_')}")
         code_directory_path = os.path.dirname(os.path.abspath(__file__))
         wandb_logger = WandbLogger(project=f"pyg_simba_{output_dir.replace('/', '_')}")
         code_artifact = wandb.Artifact("my-python-code", type="code")
         code_artifact.add_dir(code_directory_path)
         wandb_logger.experiment.log_artifact(code_artifact)
-        wandb_logger = WandbLogger(project=f"pyg_simba_{output_dir.replace('/', '_')}")
         wandb_logger.experiment.config.update(
             {
                 "run_id": run_id,
@@ -436,6 +466,7 @@ def run(
             num_sanity_val_steps=0,
             reload_dataloaders_every_n_epochs=1,
             check_val_every_n_epoch=1,
+            log_every_n_steps=10,
         )
         if not load_checkpoint:
             tuner = Tuner(trainer)
@@ -565,24 +596,28 @@ def save_files(
 
 
 def check_args(args):
-    if args.ldsc_res is not None:
-        if not os.path.exists(args.ldsc_res):
-            raise ValueError(f"LD score regression residuals file --ldsc-res {args.ldsc_res} not found.")
+    if args.sumstats is not None:
+        if not os.path.exists(args.sumstats):
+            raise ValueError(
+                f"Summary statistics file --sumstats {args.sumstats} not found."
+            )
         if args.adata_CP is None:
-            raise ValueError("--adata-CP must be provided when using --ldsc-res.")
+            raise ValueError("--adata-CP must be provided when using --sumstats.")
+
 
 def main(args):
     check_args(args)
     kwargs = vars(args)
     del kwargs["subcommand"]
-    if args.ldsc_res is not None:
+    if args.sumstats is not None:
         residuals = get_residual(
-            sumstat_list_path=args.ldsc_res,
+            sumstat_list_path=args.sumstats,
             output_path=f"{args.output_dir}/ldsc_residuals/",
             rerun=False,
             nproc=10,
         )
         kwargs["ldsc_res"] = residuals
+        del kwargs["sumstats"]
     run(**kwargs)
 
 
@@ -616,10 +651,10 @@ def add_argument(parser):
         help="Top-level output directory where run artifacts will be stored",
     )
     parser.add_argument(
-        "--ldsc-res",
+        "--sumstats",
         type=str,
-        default=".",
-        help="LD score regression residuals output paths, one per line.",
+        default=None,
+        help="If provided, LDSC is run so that peak loading maximally explains the residual of LD score regression of summary statistics.\nProvide a TSV file with one trait name and path to summary statistics file per line.",
     )
     parser.add_argument(
         "--load-checkpoint",
@@ -656,7 +691,6 @@ def add_argument(parser):
     )
 
     return parser
-
 
 
 if __name__ == "__main__":

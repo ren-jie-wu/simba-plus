@@ -47,7 +47,7 @@ class LightningProxModel(L.LightningModule):
         edge_types: Optional[Tuple[str]] = None,
         hsic: Optional[nn.Module] = None,
         herit_loss: Optional[nn.Module] = None,
-        herit_loss_lam: float = 1.0,
+        herit_loss_lam: float = 1,
         n_no_kl: int = 1,
         n_count_nodes: int = 20,
         n_kl_warmup: int = 50,
@@ -482,22 +482,13 @@ class LightningProxModel(L.LightningModule):
         return l, neg_edge_index_dict, metric_dict
 
     def training_step(self, batch, batch_idx):
-        edge_attr_type, idx = batch
-        edge_attr_type = tuple(edge_attr_type)
-
-        batch = RemoveIsolatedNodes()(
-            self.data.edge_type_subgraph([edge_attr_type]).edge_subgraph(
-                {edge_attr_type: idx.cpu()}
-            )
-        )
         t0 = time.time()
         batch = ToDevice(self.device)(batch)
-        print(f"moving to gpu:{time.time()-t0}")
 
         mu_dict, logstd_dict = self.encode(batch)
 
         z_dict = self.reparametrize(mu_dict, logstd_dict)
-
+        t0 = time.time()
         batch_nll_loss, neg_edge_index_dict, _ = self.nll_loss(
             batch,
             z_dict,
@@ -505,14 +496,18 @@ class LightningProxModel(L.LightningModule):
             batch.edge_attr_dict,
             edgetype_loss_weight_dict=self.edgetype_loss_weight_dict,
         )
+        t1 = time.time()
+        self.log("time:nll_loss", t1 - t0, on_step=True, on_epoch=False)
         if self.current_epoch >= self.n_no_kl:
+            t0 = time.time()
             batch_kl_div_loss = self.kl_div_loss(
                 mu_dict,
                 logstd_dict,
                 batch.n_id_dict,
                 node_weights_dict=self.node_weights_dict,
             )
-
+            t1 = time.time()
+            self.log("time:kl_div_loss", t1 - t0, on_step=True, on_epoch=False)
             batch_kl_div_loss *= min(
                 self.current_epoch, self.n_kl_warmup - self.n_no_kl
             ) / (self.n_kl_warmup - self.n_no_kl)
@@ -520,64 +515,50 @@ class LightningProxModel(L.LightningModule):
             batch_kl_div_loss = 0.0
         if self.herit_loss is not None:
             t0 = time.time()
-            herit_loss_value = self.herit_loss(
-                mu_dict["peak"][batch["peak"].n_id],
-                batch["peak"].n_id,
-            )
+            if "peak" in batch.node_types:
+                pid = batch["peak"].n_id.cpu()
+                herit_loss_value = self.herit_loss_lam * self.herit_loss(
+                    mu_dict["peak"],
+                    pid,
+                )
+            else:
+                herit_loss_value = torch.tensor(0.0)
             t1 = time.time()
             self.log("time:herit_loss", t1 - t0, on_step=True, on_epoch=False)
             self.log(
                 "herit_loss",
                 herit_loss_value,
-                batch_size=batch["cell"].num_edges,
-                on_step=False,
+                batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
+                on_step=True,
                 on_epoch=True,
             )
+        else:
+            herit_loss_value = torch.tensor(0.0)
         self.log(
             "nll_loss",
-            batch_nll_loss * self.nll_scale,
-            batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
-            on_step=False,
-            on_epoch=True,
-        )
-        # Log per-batch (step) NLL in addition to per-epoch aggregation
-        self.log(
-            "nll_loss_step",
-            batch_nll_loss * self.nll_scale,
+            batch_nll_loss,
             batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
             on_step=True,
-            on_epoch=False,
+            on_epoch=True,
         )
         self.log(
             "kl_div_loss",
-            batch_kl_div_loss,
+            batch_kl_div_loss / self.nll_scale,
             batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
-            on_step=False,
+            on_step=True,
             on_epoch=True,
         )
-        loss = (
-            batch_nll_loss * self.nll_scale
-            + batch_kl_div_loss
-            + self.herit_loss_lam * herit_loss_value
-        )
+        loss = batch_nll_loss + batch_kl_div_loss / self.nll_scale + herit_loss_value
         self.log(
             "loss",
             loss,
             batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
-            on_step=False,
+            on_step=True,
             on_epoch=True,
         )
         return loss
 
     def validation_step(self, batch, batch_idx):
-        edge_attr_type, idx = batch
-        edge_attr_type = tuple(edge_attr_type)
-        batch = (
-            self.data.edge_type_subgraph([edge_attr_type])
-            .edge_subgraph({edge_attr_type: idx})
-            .to(self.device)
-        )
-
         self.eval()
         mu_dict, logstd_dict = self.encode(batch)
         z_dict = self.reparametrize(mu_dict, logstd_dict)
@@ -599,40 +580,38 @@ class LightningProxModel(L.LightningModule):
             )
         else:
             batch_kl_div_loss = 0.0
-        loss = batch_nll_loss * self.val_nll_scale + batch_kl_div_loss
+
         self.log(
             "val_nll_loss",
-            batch_nll_loss * self.val_nll_scale,
+            batch_nll_loss,
             batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
             on_step=False,
             on_epoch=True,
         )
         if self.herit_loss is not None:
-            t0 = time.time()
-            herit_loss_value = self.herit_loss(
-                mu_dict["peak"][batch["peak"].n_id],
-                batch["peak"].n_id,
-            )
-            t1 = time.time()
-            self.log("time:herit_loss", t1 - t0, on_step=True, on_epoch=False)
+            if "peak" in batch.node_types:
+                pid = batch["peak"].n_id.cpu()
+                herit_loss_value = self.herit_loss_lam * self.herit_loss(
+                    mu_dict["peak"],
+                    pid,
+                )
+            else:
+                herit_loss_value = torch.tensor(0.0)
             self.log(
-                "herit_loss",
+                "val_herit_loss",
                 herit_loss_value,
-                batch_size=batch["cell"].num_edges,
+                batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
                 on_step=False,
                 on_epoch=True,
             )
-        # Also log per-validation-step NLL (so we can monitor batch-level val NLL)
-        self.log(
-            "val_nll_loss_step",
-            batch_nll_loss * self.val_nll_scale,
-            batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
-            on_step=True,
-            on_epoch=False,
+        else:
+            herit_loss_value = torch.tensor(0.0)
+        loss = (
+            batch_nll_loss + batch_kl_div_loss / self.val_nll_scale + herit_loss_value
         )
         self.log(
             "val_nll_loss_monitored",
-            batch_nll_loss * self.val_nll_scale
+            batch_nll_loss
             + (torch.inf if self.current_epoch < self.n_kl_warmup * 2 else 0),
             batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
             on_step=False,
@@ -642,7 +621,7 @@ class LightningProxModel(L.LightningModule):
             "val_kl_div_loss",
             batch_kl_div_loss,
             batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
-            on_step=False,
+            on_step=True,
             on_epoch=True,
         )
         self.log(
