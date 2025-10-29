@@ -200,9 +200,9 @@ class SumstatResidualLoss(nn.Module):
         self.coef = nn.Linear(n_factors, self.y.shape[1], bias=False).to(device)
 
     def forward(self, L, idx):
-        y = self.y[idx, :]  # n_idx, 12
-        L_normed = L / torch.norm(L, dim=0, keepdim=True)  # n_idx, 50
-        loss = (y - self.coef(L_normed)).pow(2).mean()
+        y = self.y[idx, :]  # n_idx, n_sumstats
+        L_normed = L / torch.norm(L, dim=0, keepdim=True)  # n_idx, n_factors
+        loss = (y - self.coef(L_normed)).pow(2).mean(axis=1).sum()
         return loss
 
 
