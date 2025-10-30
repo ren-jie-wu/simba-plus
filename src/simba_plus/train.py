@@ -4,6 +4,9 @@ from typing import Optional
 import pandas as pd
 from datetime import datetime
 import argparse
+import warnings
+
+warnings.simplefilter(action="ignore", category=FutureWarning)
 import anndata as ad
 import numpy as np
 from simba_plus.model_prox import LightningProxModel
@@ -410,7 +413,7 @@ def main(args):
             nproc=10,
         )
         kwargs["ldsc_res"] = residuals
-        del kwargs["sumstats"]
+    del kwargs["sumstats"]
     run(**kwargs)
 
 

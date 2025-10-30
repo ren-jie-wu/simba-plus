@@ -3,6 +3,9 @@ from typing import Dict, Iterable
 import numpy as np
 import torch
 from torch_geometric.data import HeteroData
+import warnings
+
+warnings.simplefilter(action="ignore", category=FutureWarning)
 import anndata as ad
 from simba_plus.utils import _make_tensor
 import argparse
