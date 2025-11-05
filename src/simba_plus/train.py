@@ -338,16 +338,18 @@ def run(
     def run_eval():
         data_idx_path = f"{data_path.split(".dat")[0]}_data_idx.pkl"
         metric_dict = eval(
-            last_model_path,
-            data_path,
-            data_idx_path,
-            batch_size,
+            model_path=last_model_path,
+            data=data_path,
+            index_path=data_idx_path,
+            batch_size=batch_size,
             device=device,
+            logger=logger,
         )
         pretty_print(metric_dict, logger=logger)
         with open(f"{os.path.dirname(args.model_path)}/pred_dict.pkl", "wb") as file:
             pkl.dump(metric_dict, file)
 
+    logger.info("Starting evaluation with test data...")
     run_eval()
 
 
