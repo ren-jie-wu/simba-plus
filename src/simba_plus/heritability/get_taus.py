@@ -86,9 +86,4 @@ def get_tau_z_dep(
     )
     tau_z = tau_mean / tau_std
 
-    print(f"{os.path.basename(result_path)}:{tau_d[0] / np.sqrt(np.diag(coef_cov)[0])}")
-    return (
-        tau_z,
-        (tau_d[1:] + tau_d[0]) / np.sqrt(np.diag(coef_cov)[1:] + np.diag(coef_cov)[0]),
-        (tau_d[1:] + tau_d[0]),
-    )
+    return tau_z, tau_mean

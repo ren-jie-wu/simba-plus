@@ -381,4 +381,21 @@ def setup_logging(
         logger.addHandler(fh)
 
     logger.propagate = False
+
+    # Print ASCII art banner when logger starts
+    ascii_art = """
+                    _           _                 
+  ⣀⣤⣶⣶⣤⣀         (_)         | |            _   
+⣴⣿⡿⠛⠉⠉⠛⢿⣤    ___ _ _ __ ___ | |__   __ _ _| |_ 
+⣿⣿⡇ ' ᴥ' ⢸⣿  / __| | '_ ` _ \| '_ \ / _` |_   _|
+⠹⣿⣷⣄   ⣠⣾⣿  \__ \ | | | | | | |_) | (_| | |_|  
+  ⠙⠻⠿⠿⠿⠟⠋   |___/_|_| |_| |_|_.__/ \__,_|           
+    """
+
+    # Print to console if console handler exists
+    if console:
+        print(ascii_art)
+
+    # Log the start message
+    logger.info("Logger initialized")
     return logger

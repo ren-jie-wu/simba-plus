@@ -98,6 +98,7 @@ def run(
     sumstats: Optional[str] = None,
     sumstats_lam: float = 1.0,
     early_stopping_steps: int = 3,
+    max_epochs: int = 1000,
 ):
     """Train the model with the given parameters.
     If get_adata is True, it will only load the gene/peak/cell AnnData object from the checkpoint.
@@ -266,6 +267,7 @@ def run(
             reload_dataloaders_every_n_epochs=1,
             check_val_every_n_epoch=1,
             log_every_n_steps=10,
+            max_epochs=max_epochs,
         )
         if not load_checkpoint:
             tuner = Tuner(trainer)
@@ -530,6 +532,12 @@ def add_argument(parser):
         type=int,
         default=5,
         help="Number of epoch for early stopping patience",
+    )
+    parser.add_argument(
+        "--max-epochs",
+        type=int,
+        default=100,
+        help="Number of max epochs for training",
     )
     return parser
 

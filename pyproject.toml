@@ -29,6 +29,7 @@ dependencies = [
     "pytz",
     "six",
     "scipy",
+    "gseapy",
     "pyranges",
     "numpy",
     "pandas",
