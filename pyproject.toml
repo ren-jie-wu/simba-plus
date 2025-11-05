@@ -36,7 +36,8 @@ dependencies = [
     "xgboost",
     "joblib",
     "tqdm",
-    "scikit-misc"
+    "scikit-misc",
+    "kneed",
 ]
 description = "SIMBA+"
 readme = "README.md"
