@@ -70,7 +70,6 @@ def collate(idx, data):
             batch[d[0]] = [d[1]]
         else:
             batch[d[0]].append(d[1])
-    # return {k: torch.tensor(v) for k, v in batch.items()}
     return RemoveIsolatedNodes()(
         data.edge_subgraph({k: torch.tensor(v) for k, v in batch.items()})
     )

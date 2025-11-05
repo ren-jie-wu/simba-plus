@@ -80,7 +80,6 @@ class AuxParams(nn.Module):
             )
 
             if self.use_batch:
-                print("USING BATCHES=================")
                 n_batches = len(data["cell"].batch.unique())
                 self.scale_dict[dst_scale_key] = nn.Parameter(
                     torch.cat(

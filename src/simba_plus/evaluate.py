@@ -15,22 +15,18 @@ from torch_geometric.utils import negative_sampling, to_dense_adj
 from torch_geometric.typing import EdgeType
 
 from tqdm import tqdm
-from simba_plus.loader import CustomMultiIndexDataset
+from simba_plus.loader import CustomMultiIndexDataset, collate
 from simba_plus.model_prox import LightningProxModel
 from simba_plus.evaluation_utils import (
     compute_reconstruction_gene_metrics,
     compute_classification_metrics,
 )
 from simba_plus.utils import setup_logging
+import logging
 
 ## Evaluate reconstruction quality
 
 torch_geometric.seed_everything(2025)
-
-
-def collate(data):
-    types, idxs = zip(*data)
-    return tuple(types[0]), torch.tensor(idxs)
 
 
 def decode(
@@ -46,9 +42,7 @@ def decode(
         batch,
         z_dict,
         pos_edge_index_dict,
-        scale_dict=model.scale_dict,
-        bias_dict=model.bias_dict,
-        std_dict=model.std_dict,
+        *model.aux_params(batch, pos_edge_index_dict),
     )
     neg_edge_index_dict = {}
     for edge_type, pos_edge_index in pos_edge_index_dict.items():
@@ -76,9 +70,7 @@ def decode(
         batch,
         z_dict,
         neg_edge_index_dict,
-        scale_dict=model.scale_dict,
-        bias_dict=model.bias_dict,
-        std_dict=model.std_dict,
+        *model.aux_params(batch, neg_edge_index_dict),
     )
     return pos_dist_dict, neg_edge_index_dict, neg_dist_dict
 
@@ -94,9 +86,10 @@ def get_gexp_metrics(
 ):
     if batch_size is None:
         batch_size = int(1e6)
+    gexp_edge_type = ("cell", "expresses", "gene")
     gexp_mat = (
         to_dense_adj(
-            eval_data["cell", "expresses", "gene"].edge_index,
+            eval_data[gexp_edge_type].edge_index,
         )[0, : eval_data["cell"].num_nodes, : eval_data["gene"].num_nodes]
         .cpu()
         .numpy()
@@ -104,8 +97,8 @@ def get_gexp_metrics(
     gexp_mean = gexp_mat.mean(axis=0)
     gexp_norm = gexp_mat / (gexp_mean + 1e-6)
     gexp_dataset = CustomMultiIndexDataset(
-        [("cell", "expresses", "gene")],
-        [eval_data["cell", "expresses", "gene"].edge_index],
+        [gexp_edge_type],
+        [torch.arange(eval_data[gexp_edge_type].edge_index.shape[1])],
     )
     gexp_loader = DataLoader(
         gexp_dataset,
@@ -121,29 +114,20 @@ def get_gexp_metrics(
         neg_stds = []
         neg_idx = []
         for gene_batch in tqdm(gexp_loader):
-            gene_edge_type, gene_label_index = gene_batch
-            gene_batch = eval_data.edge_subgraph(
-                {
-                    gene_edge_type: gene_label_index.to(device),
-                }
-            )
             if n_negative_samples is None:
-                n_negative_samples = (
-                    len(gene_batch["cell", "expresses", "gene"].edge_index[0]) // 10
-                )
+                n_negative_samples = len(gene_batch[gexp_edge_type].edge_index[0]) // 10
             pos_dist_dict, neg_edge_index_dict, neg_dist_dict = decode(
                 model, gene_batch, train_index, n_negative_samples=n_negative_samples
             )
-            means.append(pos_dist_dict[("cell", "expresses", "gene")].mean)
-            stds.append(pos_dist_dict[("cell", "expresses", "gene")].stddev)
-            neg_means.append(neg_dist_dict[("cell", "expresses", "gene")].mean)
-            neg_stds.append(neg_dist_dict[("cell", "expresses", "gene")].stddev)
-            neg_idx.append(neg_edge_index_dict[("cell", "expresses", "gene")])
-            print("decoded gexp")
+            means.append(pos_dist_dict[gexp_edge_type].mean)
+            stds.append(pos_dist_dict[gexp_edge_type].stddev)
+            neg_means.append(neg_dist_dict[gexp_edge_type].mean)
+            neg_stds.append(neg_dist_dict[gexp_edge_type].stddev)
+            neg_idx.append(neg_edge_index_dict[gexp_edge_type])
         gexp_pred_mu = torch.cat(means + neg_means)
         gexp_pred_std = torch.cat(stds + neg_stds)
         gexp_neg_idx = torch.cat(neg_idx, dim=1)
-    pos_idxs = eval_data["cell", "expresses", "gene"].edge_index[:, gexp_dataset.index]
+    pos_idxs = eval_data[gexp_edge_type].edge_index[:, gexp_dataset.index]
     all_idxs = torch.cat([pos_idxs, gexp_neg_idx], dim=1)
     test_dense_mat = scipy.sparse.coo_matrix(
         (
@@ -185,9 +169,10 @@ def get_accessibility_metrics(
 ):
     if batch_size is None:
         batch_size = int(1e6)
+    acc_edge_type = ("cell", "has_accessible", "peak")
     acc_dataset = CustomMultiIndexDataset(
-        [("cell", "has_accessible", "peak")],
-        [eval_data["cell", "has_accessible", "peak"].edge_index],
+        [acc_edge_type],
+        [torch.arange(eval_data[acc_edge_type].edge_index.shape[1])],
     )
     acc_loader = DataLoader(
         acc_dataset,
@@ -201,13 +186,6 @@ def get_accessibility_metrics(
         preds = []
         edge_idxs = []
         for acc_batch in tqdm(acc_loader):
-            acc_edge_type, acc_label_index = acc_batch
-            acc_edge_type = tuple(acc_edge_type)
-            acc_batch = eval_data.edge_type_subgraph(acc_edge_type).edge_subgraph(
-                {
-                    acc_edge_type: acc_label_index.to(device),
-                }
-            )
             edge_idxs.append(acc_batch[acc_edge_type].edge_index.cpu())
             pos_dist_dict, neg_edge_index_dict, neg_dist_dict = decode(
                 model, acc_batch, data, n_negative_samples=n_negative_samples
@@ -217,14 +195,8 @@ def get_accessibility_metrics(
                 (
                     torch.cat(
                         [
-                            acc_batch[
-                                ("cell", "has_accessible", "peak")
-                            ].edge_attr.cpu(),
-                            torch.zeros(
-                                neg_edge_index_dict[
-                                    ("cell", "has_accessible", "peak")
-                                ].shape[1]
-                            ),
+                            acc_batch[acc_edge_type].edge_attr.cpu(),
+                            torch.zeros(neg_edge_index_dict[acc_edge_type].shape[1]),
                         ],
                         dim=0,
                     )
@@ -236,8 +208,8 @@ def get_accessibility_metrics(
                 (
                     torch.cat(
                         [
-                            pos_dist_dict[("cell", "has_accessible", "peak")].logits,
-                            neg_dist_dict[("cell", "has_accessible", "peak")].logits,
+                            pos_dist_dict[acc_edge_type].logits,
+                            neg_dist_dict[acc_edge_type].logits,
                         ],
                         dim=0,
                     )
@@ -253,7 +225,7 @@ def get_accessibility_metrics(
             torch.sigmoid(acc_pred),
             plot=False,
         )
-        print(acc_pred.shape)
+
         metrics["pred"] = scipy.sparse.coo_matrix(
             (
                 acc_pred.detach().cpu().numpy(),
@@ -272,6 +244,7 @@ def eval(
     batch_size: Optional[int] = None,
     n_negative_samples: Optional[int] = None,
     index_path: Optional[str] = None,
+    logger=None,
 ):
     data = torch.load(data, weights_only=False)
     data.generate_ids()
@@ -294,7 +267,7 @@ def eval(
     model = LightningProxModel.load_from_checkpoint(model_path, weights_only=True).to(
         device
     )
-    print("loaded model")
+    logger.info(f"Loaded model from {model_path}.")
     model.eval()
     if eval_split == "val":
         train_index = {
@@ -324,7 +297,6 @@ def eval(
             .to(device)
             for k, v in data_idx["test"].items()
         }
-        print(train_index)
 
     if ("cell", "expresses", "gene") in eval_data.edge_types:
         metric_dict["gexp"] = get_gexp_metrics(
@@ -392,7 +364,12 @@ def add_argument(parser: ArgumentParser) -> ArgumentParser:
     return parser
 
 
-def pretty_print(metric_dict, show_histogram=True, histogram_width=50):
+def pretty_print(
+    metric_dict,
+    logger,
+    show_histogram=True,
+    histogram_width=50,
+):
     """
     Pretty print metrics dictionary focusing on scalar and array metrics.
 
@@ -405,13 +382,13 @@ def pretty_print(metric_dict, show_histogram=True, histogram_width=50):
     histogram_width : int, default 50
         Width of the ASCII histogram
     """
-    print("=" * 80)
-    print("EVALUATION METRICS SUMMARY")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info("EVALUATION METRICS SUMMARY")
+    logger.info("=" * 80)
 
     for task_name, metrics in metric_dict.items():
-        print(f"\n📊 {task_name.upper()} METRICS")
-        print("-" * 60)
+        logger.info(f"\n📊 {task_name.upper()} METRICS")
+        logger.info("-" * 60)
 
         # Separate metrics by type
         scalar_metrics = {}
@@ -427,28 +404,28 @@ def pretty_print(metric_dict, show_histogram=True, histogram_width=50):
 
         # Print scalar metrics first
         if scalar_metrics:
-            print("🔢 Scalar Metrics:")
+            logger.info("🔢 Scalar Metrics:")
             for metric_name, value in scalar_metrics.items():
                 if isinstance(value, (np.floating, float)):
-                    print(f"   {metric_name:<30}: {value:.6f}")
+                    logger.info(f"   {metric_name:<30}: {value:.6f}")
                 else:
-                    print(f"   {metric_name:<30}: {value}")
+                    logger.info(f"   {metric_name:<30}: {value}")
 
         # Print array metrics with comprehensive statistics
         if array_metrics:
-            print(f"\n📈 Array Metrics:")
+            logger.info(f"\n📈 Array Metrics:")
             for metric_name, array in array_metrics.items():
-                print(f"\n   {metric_name}:")
-                print(f"   {'─' * (len(metric_name) + 3)}")
+                logger.info(f"\n   {metric_name}:")
+                logger.info(f"   {'─' * (len(metric_name) + 3)}")
 
                 # Basic statistics
-                print(f"   Mean:       {np.mean(array):.6f}")
-                print(f"   Std:        {np.std(array):.6f}")
-                print(f"   Min:        {np.min(array):.6f}")
-                print(f"   Max:        {np.max(array):.6f}")
-                print(f"   Median:     {np.median(array):.6f}")
+                logger.info(f"   Mean:       {np.mean(array):.6f}")
+                logger.info(f"   Std:        {np.std(array):.6f}")
+                logger.info(f"   Min:        {np.min(array):.6f}")
+                logger.info(f"   Max:        {np.max(array):.6f}")
+                logger.info(f"   Median:     {np.median(array):.6f}")
 
-    print("\n" + "=" * 80)
+    logger.info("\n" + "=" * 80)
 
 
 def main(args, logger=None):
@@ -460,7 +437,7 @@ def main(args, logger=None):
     if os.path.exists(metric_dict_path):
         with open(metric_dict_path, "rb") as file:
             metric_dict = pkl.load(file)
-        pretty_print(metric_dict)
+        pretty_print(metric_dict, logger=logger)
         return
     metric_dict = eval(
         args.model_path,
@@ -469,8 +446,9 @@ def main(args, logger=None):
         batch_size=args.batch_size,
         n_negative_samples=args.n_negative_samples,
         device=args.device,
+        logger=logger,
     )
-    pretty_print(metric_dict)
+    pretty_print(metric_dict, logger=logger)
     with open(f"{os.path.dirname(args.model_path)}/pred_dict.pkl", "wb") as file:
         pkl.dump(metric_dict, file)
 

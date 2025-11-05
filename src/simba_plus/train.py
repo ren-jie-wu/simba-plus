@@ -5,6 +5,7 @@ import pandas as pd
 from datetime import datetime
 import argparse
 import warnings
+import pickle as pkl
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 import anndata as ad
@@ -33,6 +34,7 @@ from simba_plus.heritability.get_residual import (
     get_residual,
     get_peak_residual,
 )
+from simba_plus.evaluate import eval, pretty_print
 import torch.multiprocessing
 
 
@@ -333,6 +335,21 @@ def run(
         logger=logger,
     )
 
+    def run_eval():
+        data_idx_path = f"{data_path.split(".dat")[0]}_data_idx.pkl"
+        metric_dict = eval(
+            last_model_path,
+            data_path,
+            data_idx_path,
+            batch_size,
+            device=device,
+        )
+        pretty_print(metric_dict, logger=logger)
+        with open(f"{os.path.dirname(args.model_path)}/pred_dict.pkl", "wb") as file:
+            pkl.dump(metric_dict, file)
+
+    run_eval()
+
 
 def human_format(num):
     num = float(f"{num:.3g}")
@@ -447,19 +464,6 @@ def save_files(
     adata_P.write(f"{run_id}.checkpoints/adata_P{checkpoint_suffix}.h5ad")
     logger.info(
         f"Saved AnnDatas into {run_id}.checkpoints/adata_{{C,P,G}}{checkpoint_suffix}.h5ad"
-    )
-
-
-def eval_run(args):
-    data_idx_path = f"{args.data_path.split(".dat")[0]}_data_idx.pkl"
-    model_path = f"{get_run_id()}.checkpoints/last{checkpoint_suffix}.ckpt"
-    metric_dict = eval(
-        model_path,
-        args.data_path,
-        data_idx_path,
-        args.batch_size,
-        args.n_negative_samples,
-        device=args.device,
     )
 
 
