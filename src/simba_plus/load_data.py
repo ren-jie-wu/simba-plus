@@ -108,7 +108,7 @@ def make_sc_HetData(
         )
 
     for node_type in data.node_types:
-        data[node_type].x = torch.tensor(data[node_type].x, dtype=torch.float)
+        data[node_type].x = data[node_type].x.detach().clone().float()
     return data
 
 

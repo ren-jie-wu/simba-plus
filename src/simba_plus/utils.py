@@ -391,11 +391,5 @@ def setup_logging(
 ⠹⣿⣷⣄   ⣠⣾⣿  \__ \ | | | | | | |_) | (_| | |_|  
   ⠙⠻⠿⠿⠿⠟⠋   |___/_|_| |_| |_|_.__/ \__,_|           
     """
-
-    # Print to console if console handler exists
-    if console:
-        print(ascii_art)
-
-    # Log the start message
-    logger.info("Logger initialized")
+    logger.info(ascii_art)
     return logger
