@@ -385,13 +385,14 @@ def pretty_print(
     histogram_width : int, default 50
         Width of the ASCII histogram
     """
-    logger.info("=" * 80)
-    logger.info("EVALUATION METRICS SUMMARY")
-    logger.info("=" * 80)
+    output_string = "\n"
+    output_string += "=" * 80 + "\n"
+    output_string += "EVALUATION METRICS SUMMARY" + "\n"
+    output_string += "=" * 80 + "\n"
 
     for task_name, metrics in metric_dict.items():
-        logger.info(f"\n📊 {task_name.upper()} METRICS")
-        logger.info("-" * 60)
+        output_string += f"\n📊 {task_name.upper()} METRICS" + "\n"
+        output_string += "-" * 60 + "\n"
 
         # Separate metrics by type
         scalar_metrics = {}
@@ -407,28 +408,29 @@ def pretty_print(
 
         # Print scalar metrics first
         if scalar_metrics:
-            logger.info("🔢 Scalar Metrics:")
+            output_string += "🔢 Scalar Metrics:" + "\n"
             for metric_name, value in scalar_metrics.items():
                 if isinstance(value, (np.floating, float)):
-                    logger.info(f"   {metric_name:<30}: {value:.6f}")
+                    output_string += f"   {metric_name:<30}: {value:.6f}" + "\n"
                 else:
-                    logger.info(f"   {metric_name:<30}: {value}")
+                    output_string += f"   {metric_name:<30}: {value}" + "\n"
 
         # Print array metrics with comprehensive statistics
         if array_metrics:
-            logger.info(f"\n📈 Array Metrics:")
+            output_string += f"\n📈 Array Metrics:" + "\n"
             for metric_name, array in array_metrics.items():
-                logger.info(f"\n   {metric_name}:")
-                logger.info(f"   {'─' * (len(metric_name) + 3)}")
+                output_string += f"\n   {metric_name}:" + "\n"
+                output_string += f"   {'─' * (len(metric_name) + 3)}" + "\n"
 
                 # Basic statistics
-                logger.info(f"   Mean:       {np.mean(array):.6f}")
-                logger.info(f"   Std:        {np.std(array):.6f}")
-                logger.info(f"   Min:        {np.min(array):.6f}")
-                logger.info(f"   Max:        {np.max(array):.6f}")
-                logger.info(f"   Median:     {np.median(array):.6f}")
+                output_string += f"   Mean:       {np.mean(array):.6f}" + "\n"
+                output_string += f"   Std:        {np.std(array):.6f}" + "\n"
+                output_string += f"   Min:        {np.min(array):.6f}" + "\n"
+                output_string += f"   Max:        {np.max(array):.6f}" + "\n"
+                output_string += f"   Median:     {np.median(array):.6f}" + "\n"
 
-    logger.info("\n" + "=" * 80)
+    output_string += "\n" + "=" * 80 + "\n"
+    logger.info(output_string)
 
 
 def main(args, logger=None):
