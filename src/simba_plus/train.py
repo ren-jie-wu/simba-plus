@@ -346,7 +346,7 @@ def run(
             logger=logger,
         )
         pretty_print(metric_dict, logger=logger)
-        with open(f"{os.path.dirname(args.model_path)}/pred_dict.pkl", "wb") as file:
+        with open(f"{os.path.dirname(last_model_path)}/pred_dict.pkl", "wb") as file:
             pkl.dump(metric_dict, file)
 
     logger.info("Starting evaluation with test data...")
@@ -481,8 +481,7 @@ def main(args):
             nprocs=args.num_workers,
         )
         kwargs["ldsc_res"] = residuals
-    model_path = run(**kwargs)
-    metric_dict = eval_run(model_path, args)
+    run(**kwargs)
 
 
 def add_argument(parser):
