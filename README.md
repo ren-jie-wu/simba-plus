@@ -1,4 +1,4 @@
-# <img src="docs/assets/simba+_icon.webp" alt="simba+" height="50"/> **SIMBA+**
+# <img src="docs/assets/simba+_icon.webp" alt="simba+" height="120"/> **SIMBA+**
 
 `SIMBA+`, a probabilistic graph framework that integrates **single-cell multiomics** with **GWAS** to:
 1) **Map regulatory elements and disease variants to target genes** in specific cellular contexts through metapath analysis, and
