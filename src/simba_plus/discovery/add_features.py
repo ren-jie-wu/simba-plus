@@ -147,4 +147,5 @@ def add_simba_plus_features(
         df_softmax_CG=G_df,
         df_softmax_CP=P_df,
     )
+    eval_df.drop_duplicates('peak_gene_pair',inplace=True)
     return eval_df
