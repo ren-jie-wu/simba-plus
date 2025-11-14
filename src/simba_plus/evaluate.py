@@ -206,7 +206,7 @@ def get_accessibility_metrics(
                 acc_pred.detach().cpu().numpy(),
                 (acc_edge_idx[0], acc_edge_idx[1]),
             ),
-            shape=(eval_data["cell"].num_nodes, eval_data["peak"].num_nodes),
+            shape=(data["cell"].num_nodes, data["peak"].num_nodes),
         )
     return metrics
 

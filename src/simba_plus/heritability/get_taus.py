@@ -46,7 +46,7 @@ def get_tau_z_dep(
     mat,
     include_ov=False,
     ov_cov=None,
-    annot_suffix="L2_2",
+    annot_suffix="L2_1",
 ):
     index = pd.read_csv(result_path, sep="\t", index_col=0).index
     if ov_cov is None:
@@ -70,7 +70,11 @@ def get_tau_z_dep(
         .loc[:, index_select]
     )
     coef_corr = get_corr(coef_cov)
-    result = pd.read_csv(result_path, sep="\t", index_col=0).loc[index_select, :]
+    result = pd.read_csv(result_path, sep="\t", index_col=0)
+    try:
+        result = result.loc[index_select, :]
+    except KeyError:
+        print(result)
     tau_d = result["Coefficient"]
     tau_mean = mat_w_cov @ tau_d
     tau_std = np.sqrt(
