@@ -60,21 +60,23 @@ def get_tau_z_dep(
     else:
         index_select = [f"{i}{annot_suffix}" for i in range(n_annot)]
         mat_w_cov = mat
-    coef_cov = (
-        pd.DataFrame(
-            np.load(result_path.rsplit("results", 1)[0] + "coef_cov.npy"),
-            index=index,
-            columns=index,
-        )
-        .loc[index_select, :]
-        .loc[:, index_select]
+    coef_cov = pd.DataFrame(
+        np.load(result_path.rsplit("results", 1)[0] + "coef_cov.npy"),
+        index=index,
+        columns=index,
     )
+    try:
+        coef_cov = coef_cov.loc[index_select, :].loc[:, index_select].values
+    except KeyError as e:
+        print(coef_cov)
+        raise e
     coef_corr = get_corr(coef_cov)
     result = pd.read_csv(result_path, sep="\t", index_col=0)
     try:
         result = result.loc[index_select, :]
-    except KeyError:
+    except KeyError as e:
         print(result)
+        raise e
     tau_d = result["Coefficient"]
     tau_mean = mat_w_cov @ tau_d
     tau_std = np.sqrt(

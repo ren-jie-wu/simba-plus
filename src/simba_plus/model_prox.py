@@ -24,12 +24,6 @@ from simba_plus._utils import (
     update_lr,
 )
 
-from simba_plus.evaluation_utils import (
-    compute_reconstruction_gene_metrics,
-    compute_classification_metrics,
-    plot_nll_distributions,
-)
-
 
 class AuxParams(nn.Module):
     def __init__(self, data: HeteroData, edgetype_specific: bool = True) -> None:

@@ -185,9 +185,9 @@ def run(
         logger=logger,
         device=device,
     )
-    n_batches = len(pldata.train_loader) // batch_size + 1
+    n_batches = len(pldata.train_dataloader().dataset) // batch_size + 1
     logger.info(f"@N_BATCHES:{n_batches}")
-    n_val_batches = len(pldata.val_loader) // batch_size + 1
+    n_val_batches = len(pldata.val_dataloader().dataset) // batch_size + 1
     nll_scale, val_nll_scale = get_nll_scales(
         data=data,
         pldata=pldata,

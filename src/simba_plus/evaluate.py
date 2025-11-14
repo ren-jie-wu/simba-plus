@@ -16,7 +16,7 @@ from torch_geometric.typing import EdgeType
 from torch_geometric.transforms.to_device import ToDevice
 from tqdm import tqdm
 from simba_plus.loader import CustomMultiIndexDataset, collate
-from simba_plus.model_prox import LightningProxModel
+from simba_plus.model_prox import LightningProxModel, make_key
 from simba_plus.evaluation_utils import (
     compute_reconstruction_gene_metrics,
     compute_classification_metrics,
@@ -66,8 +66,14 @@ def get_gexp_metrics(
     ).toarray()
     gexp_mean = gexp_mat.mean(axis=0)
     cell_mean = gexp_mat.mean(axis=1)
+    gexp_std = gexp_mat.std(axis=0)
+    cell_std = gexp_mat.std(axis=1)
 
-    gexp_norm = gexp_mat / (gexp_mean + 1e-6)
+    gexp_norm = (
+        (gexp_mat - gexp_mean - cell_mean[:, None])
+        / (gexp_std + 1e-6)
+        / (cell_std[:, None] + 1e-6)
+    )
     gexp_dataset = CustomMultiIndexDataset(
         {
             gexp_edge_type: torch.sort(index_dict[gexp_edge_type])[0],
@@ -122,16 +128,45 @@ def get_gexp_metrics(
         .toarray()
         .astype(bool)
     )
+    pred_gene_mean = (
+        model.aux_params.bias_dict[make_key(dst, gexp_edge_type)].detach().cpu().numpy()
+    )
+    pred_cell_mean = (
+        model.aux_params.bias_dict[make_key(src, gexp_edge_type)].detach().cpu().numpy()
+    )
+    pred_gene_scale = (
+        model.aux_params.logscale_dict[make_key(dst, gexp_edge_type)]
+        .detach()
+        .cpu()
+        .exp()
+        .numpy()
+    )
+    pred_cell_scale = (
+        model.aux_params.logscale_dict[make_key(src, gexp_edge_type)]
+        .detach()
+        .cpu()
+        .exp()
+        .numpy()
+    )
 
     res_out = test_dense_mat.toarray()
-    res_out_norm = res_out / (gexp_mean + 1e-6)
+    res_out_norm = (
+        (res_out - pred_gene_mean - cell_mean[:, None])
+        / (pred_gene_scale + 1e-6)
+        / (pred_cell_scale[:, None] + 1e-6)
+    )
+    # res_out_norm = (
+    #     (res_out - gexp_mean - cell_mean[:, None])
+    #     / (gexp_std + 1e-6)
+    #     / (cell_std[:, None] + 1e-6)
+    # )
     corrs = []
     spearman_corrs = []
     for i in range(res_out_norm.shape[1]):
-        if gexp_mean[i] == 0:
+        if gexp_mean[i] < 3:
             continue
         nonzero_idx = mask[:, i]
-        if nonzero_idx.sum() < 5:
+        if nonzero_idx.sum() == 0:
             continue
         if len(np.unique(gexp_norm[nonzero_idx, i])) == 1:
             continue

@@ -1,7 +1,7 @@
 import urllib.request
 from tqdm import tqdm
 import os
-
+import zipfile
 from .._settings import settings
 from ..readwrite import read_h5ad
 
@@ -26,6 +26,29 @@ def download_url(url, output_path, desc=None):
             if os.path.exists(output_path):
                 os.remove(output_path)
             raise e
+
+
+def unzip_file(zip_filepath, extract_to_dir):
+    """
+    Unzips a zip file to a specified directory.
+
+    Args:
+        zip_filepath (str): The path to the zip file.
+        extract_to_dir (str): The directory where the contents will be extracted.
+    """
+    try:
+        # Create the extraction directory if it doesn't exist
+        os.makedirs(extract_to_dir, exist_ok=True)
+        with zipfile.ZipFile(zip_filepath, "r") as zip_ref:
+            zip_ref.extractall(extract_to_dir)
+        print(f"Successfully unzipped '{zip_filepath}' to '{extract_to_dir}'")
+        os.remove(zip_filepath)
+    except zipfile.BadZipFile:
+        print(f"Error: '{zip_filepath}' is not a valid zip file.")
+    except FileNotFoundError:
+        print(f"Error: Zip file not found at '{zip_filepath}'.")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
 
 
 def rna_10xpmbc3k():
@@ -576,14 +599,24 @@ def sumstats(logger=None):
             logger.info(msg)
 
     sumstats_url = "https://figshare.com/ndownloader/files/34300928"
-    filename = "sumstats.txt"
-    filepath_prefix = os.path.join(os.path.dirname(__file__), "../../../data/sumstats/")
+    filename = "sumstats.zip"
+    filepath_prefix = os.path.join(os.path.dirname(__file__), "../../../data/")
+    sumstats_dir = os.path.join(filepath_prefix, "sumstats")
+    os.makedirs(filepath_prefix, exist_ok=True)
     fullpath_sumstats = os.path.join(filepath_prefix, filename)
 
-    if not os.path.exists(fullpath_sumstats):
+    if not os.path.exists(fullpath_sumstats) and not os.path.exists(sumstats_dir):
         _log(f"Downloading sumstats to {fullpath_sumstats}...")
         os.makedirs(filepath_prefix, exist_ok=True)
         download_url(sumstats_url, fullpath_sumstats, desc=filename)
         _log(f"Downloaded to {fullpath_sumstats}.")
     else:
         _log(f"Sumstats already present at {fullpath_sumstats}, skipping download.")
+    if not os.path.exists(sumstats_dir):
+        unzip_file(fullpath_sumstats, filepath_prefix)
+    sumstat_list_file = open(os.path.join(sumstats_dir, "sumstats.txt"), "w")
+    for f in os.listdir(sumstats_dir):
+        if f.endswith(".sumstats"):
+            sumstat_list_file.write(f"{f.split('.sumstats')[0]}\t{f}\n")
+    sumstat_list_file.close()
+    _log(f"Sumstats files are ready at {sumstats_dir}.")

@@ -3,6 +3,7 @@ from typing import Literal
 import os
 import numpy as np
 import anndata as ad
+import scanpy as sc
 import pandas as pd
 import papermill as pm
 from argparse import ArgumentParser
@@ -143,10 +144,21 @@ def run_ldsc(
     write_peak_annot(
         peak_annot, peak_info_df, annot_prefix, logger=logger, type=annot_type
     )
-    run_ldsc_l2(annot_prefix, annot_type=annot_type, nprocs=nprocs, logger=logger)
+    run_ldsc_l2(
+        annot_prefix,
+        annot_type=annot_type,
+        rerun=rerun_l2,
+        nprocs=nprocs,
+        logger=logger,
+    )
     output_dir = f"{output_dir}/h2/{annot_id}/"
     run_ldsc_h2(
-        sumstat_paths_file, output_dir, rerun=rerun_h2, nprocs=nprocs, logger=logger
+        sumstat_paths_file,
+        annot_prefix,
+        output_dir,
+        rerun=rerun_h2,
+        nprocs=nprocs,
+        logger=logger,
     )
 
 
@@ -196,6 +208,8 @@ def main(args, logger=None):
         args.output_dir,
         logger=logger,
         annot_id="peak_loadings",
+        rerun_l2=args.rerun,
+        rerun_h2=args.rerun_h2,
     )
 
     # Get SIMBA+ heritability scores
@@ -219,27 +233,39 @@ def main(args, logger=None):
     )
 
     # Enrichment analysis
-    enrichment_results = enrichment_analysis(
-        pd.DataFrame(adata_G.obs[["" for p in sumstat_paths_dict.keys()]]).T,
-        index=adata_G.obs_names,
-    )
-    with open(f"{args.output_dir}/enrichment_results.pkl", "wb") as f:
-        pkl.dump(enrichment_results, f)
+    # enrichment_results = enrichment_analysis(
+    #     pd.DataFrame(adata_G.obs[["" for p in sumstat_paths_dict.keys()]]).T,
+    #     index=adata_G.obs_names,
+    # )
+    # with open(f"{args.output_dir}/enrichment_results.pkl", "wb") as f:
+    #     pkl.dump(enrichment_results, f)
 
-    if args.create_report:
-        pm.execute_notebook(
-            "./scheritability_report.ipynb",
-            f"{args.output_dir}report{'' if args.gene_dist is None else '_' + str(args.gene_dist)}.ipynb",
-            parameters=dict(
-                checkpoint_path=args.checkpoint_path,
-                version_suffix=args.version_suffix,
-                cell_type_label=args.cell_type_label,
-                sumstat_paths_file=args.sumstats,
-                adata_prefix=args.adata_prefix,
-                rerun=args.rerun,
-                rerun_h2=args.rerun_h2,
-                output_path=args.output_dir,
-                gene_mapping_distance=args.gene_dist,
-            ),
-            kernel_name="jy_ldsc3",
-        )
+    # if args.create_report:
+    # pm.execute_notebook(
+    #     f"{os.path.dirname(__file__)}/scheritability_report.ipynb",
+    #     f"{args.output_dir}/simba+heritability_report.ipynb",
+    #     parameters=dict(
+    #         checkpoint_path=args.checkpoint_path,
+    #         version_suffix=args.version_suffix,
+    #         cell_type_label=args.cell_type_label,
+    #         sumstat_paths_file=args.sumstats,
+    #         adata_prefix=args.adata_prefix,
+    #         rerun=args.rerun,
+    #         rerun_h2=args.rerun_h2,
+    #         output_path=args.output_dir,
+    #     ),
+    # )
+    sumstat_paths = pd.read_csv(args.sumstats, sep="\t", header=None, index_col=0)[
+        1
+    ].to_dict()
+    p = sc.pl.umap(
+        adata_C,
+        color=[f"tau_z_{pheno}" for pheno in sumstat_paths.keys()],
+        vcenter=0,
+        size=5,
+        alpha=0.5,
+        ncols=4,
+        cmap="coolwarm",
+        show=False,
+    ).figure.savefig(f"{args.output_dir}/cell_type_heritability_scores.png")
+    logger.info(f"Generated heritability report at {args.output_dir}/")

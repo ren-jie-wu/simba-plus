@@ -81,7 +81,9 @@ def run_ldsc_l2(
             raise subprocess.CalledProcessError(rc, process.args)
 
 
-def run_ldsc_h2(sumstat_paths_file, out_dir, rerun=False, nprocs=10, logger=None):
+def run_ldsc_h2(
+    sumstat_paths_file, annot_prefix, out_dir, rerun=False, nprocs=10, logger=None
+):
     simba_plus.datasets._datasets.heritability(logger=logger)
     processes = []
     os.makedirs(out_dir, exist_ok=True)
@@ -91,7 +93,9 @@ def run_ldsc_h2(sumstat_paths_file, out_dir, rerun=False, nprocs=10, logger=None
     ldscdir = f"{script_dir}/../../ldsc/"
     weights_prefix = f"{filedir}/1000G_Phase3_weights_hm3_no_MHC/weights.hm3_noMHC."
     frq_prefix = f"{filedir}/1000G_Phase3_frq/1000G.EUR.QC."
-    refmodel_prefix = f"{filedir}/1000G_Phase3_baselineLD_v2.2_ldscores/baselineLD."
+    refmodel_prefix = (
+        f"{filedir}/1000G_Phase3_baselineLD_v2.2_ldscores/baselineLD.,{annot_prefix}."
+    )
     sumstat_paths = pd.read_csv(sumstat_paths_file, sep="\t", header=None, index_col=0)[
         1
     ].to_dict()
@@ -101,7 +105,7 @@ def run_ldsc_h2(sumstat_paths_file, out_dir, rerun=False, nprocs=10, logger=None
         )
         out_path = os.path.join(out_dir, sumstat_basename)
         if (not rerun) and os.path.exists(f"{out_path}.results"):
-            print(f"Skipping existing LDSC output for {sumstat_basename}")
+            print(f"Skipping existing LDSC h2 output for {sumstat_basename}")
             continue
         cmd = [
             "python",
