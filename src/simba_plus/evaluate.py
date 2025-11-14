@@ -157,7 +157,7 @@ def get_gexp_metrics(
 
 def get_accessibility_metrics(
     model: LightningProxModel,
-    eval_data: torch_geometric.data.Data,
+    index_dict: Dict[EdgeType, Tensor],
     data: torch_geometric.data.Data,
     batch_size: Optional[int] = None,
     negative_sampling_fold: Optional[int] = 1,
@@ -168,7 +168,7 @@ def get_accessibility_metrics(
         batch_size = int(1e6)
     acc_edge_type = ("cell", "has_accessible", "peak")
     acc_dataset = CustomMultiIndexDataset(
-        {acc_edge_type: eval_data[acc_edge_type].e_id},
+        {acc_edge_type: index_dict[acc_edge_type]},
         data,
         negative_sampling_fold=negative_sampling_fold,
     )
