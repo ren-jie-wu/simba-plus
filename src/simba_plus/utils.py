@@ -139,7 +139,6 @@ def get_edge_split_data(data, data_path, edge_types, negative_sampling_fold, log
             val_edge_index_dict = saved_splits["val"]
             test_edge_index_dict = saved_splits["test"]
             # Reconstruct train indices as complement of val+test
-            train_edge_index_dict = {}
             for edge_type in edge_types:
                 edge_key = "__".join(edge_type)
                 train_idxs[edge_type] = train_edge_index_dict[edge_key]
