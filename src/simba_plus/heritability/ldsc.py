@@ -103,6 +103,10 @@ def run_ldsc_h2(
         sumstat_basename = (
             os.path.basename(sumstat_path).split(".gz")[0].split(".sumstats")[0]
         )
+        if not os.path.dirname(sumstat_path):
+            sumstat_path = os.path.join(
+                os.path.dirname(sumstat_paths_file), sumstat_path
+            )
         out_path = os.path.join(out_dir, sumstat_basename)
         if (not rerun) and os.path.exists(f"{out_path}.results"):
             print(f"Skipping existing LDSC h2 output for {sumstat_basename}")

@@ -19,7 +19,6 @@ snp_pos_path = f"{os.path.dirname(__file__)}/../../../data/ldsc_data/1000G_Phase
 
 
 def add_argument(parser: ArgumentParser) -> ArgumentParser:
-    parser.add_argument("checkpoint_path", type=str)
     parser.add_argument(
         "sumstats", help="GwAS summary statistics compatible with LDSC inputs", type=str
     )
@@ -194,10 +193,10 @@ def assign_heritability_scores(adata_C, sumstat_paths, herit_result_prefix):
 def main(args, logger=None):
     if not logger:
         logger = setup_logging(
-            "simba+heritability", log_dir=os.path.dirname(args.checkpoint_path)
+            "simba+heritability", log_dir=os.path.dirname(args.adata_prefix)
         )
     if args.output_dir is None:
-        args.output_dir = f"{os.path.dirname(args.checkpoint_path)}/heritability/"
+        args.output_dir = f"{os.path.dirname(args.adata_prefix)}/heritability/"
         os.makedirs(args.output_dir, exist_ok=True)
 
     adata_C, adata_P, adata_G = load_data(args.adata_prefix, args.version_suffix)

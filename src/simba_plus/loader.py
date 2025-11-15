@@ -111,9 +111,12 @@ class CustomNSMultiIndexDataset(Dataset):
         self.type_assignments = torch.cat(
             [torch.full((length,), i) for i, length in enumerate(self.lengths)]
         )[perm_idx]
+        self.permuted_edge_idx = {
+            k: v[torch.randperm(len(v))] for k, v in self.edge_index_dict.items()
+        }
         self.all_edge_idx = torch.zeros(self.total_length, dtype=torch.long)
         for i, edge_type in enumerate(self.edge_types):
-            self.all_edge_idx[self.type_assignments == i] = self.edge_index_dict[
+            self.all_edge_idx[self.type_assignments == i] = self.permuted_edge_idx[
                 edge_type
             ]
         print("Negative sampling and permutation done.")
