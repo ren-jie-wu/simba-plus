@@ -139,7 +139,6 @@ def train_supervised(eval_df, feature_sets, dataset_name, output_path):
 # ======================================================
 
 def parse_feature_sets(csv_path):
-    """Load feature_sets from a CSV and return dict[str, list[str]]."""
     df = pd.read_csv(csv_path)
 
     if "feature_set_name" not in df.columns or "features" not in df.columns:
@@ -149,52 +148,38 @@ def parse_feature_sets(csv_path):
     for _, row in df.iterrows():
         name = row["feature_set_name"]
 
-        # Option A: comma-separated list (recommended)
+        # Case 1: comma-separated list
         if isinstance(row["features"], str) and "," in row["features"]:
             features = [f.strip() for f in row["features"].split(",")]
-
-        # Option B: Python list string → parse using ast.literal_eval
         else:
+            # Case 2: Python list string (e.g. "['a','b']")
             features = ast.literal_eval(row["features"])
 
         feature_sets[name] = features
 
     return feature_sets
 
+def add_parser(subparser):
+    subparser.add_argument("--eval_csv", required=True, help="Evaluation dataframe CSV.")
+    subparser.add_argument("--feature_sets_csv", required=True, help="Feature sets CSV.")
+    subparser.add_argument("--dataset_name", required=True, help="Dataset identifier.")
+    subparser.add_argument("--output_path", required=True, help="Directory for outputs.")
+    return subparser
 
-def main():
-    parser = argparse.ArgumentParser(description="Run supervised XGBoost training on Simba+ features.")
-    parser.add_argument("--eval_csv", type=str, required=True, 
-                        help="Path to evaluation dataframe CSV.")
-    parser.add_argument("--feature_sets_csv", type=str, required=True, 
-                        help="CSV defining feature_set groups.")
-    parser.add_argument("--dataset_name", type=str, required=True, 
-                        help="Dataset name for logging.")
-    parser.add_argument("--output_path", type=str, required=True, 
-                        help="Path to save training outputs.")
-    args = parser.parse_args()
-
-    # Load eval dataframe
+def main(args):
     eval_df = pd.read_csv(args.eval_csv)
-
-    # Parse feature_sets dict
     feature_sets = parse_feature_sets(args.feature_sets_csv)
 
-    # Train
-    results_obj, metrics_df, preds_df = train_supervised(
+    os.makedirs(args.output_path, exist_ok=True)
+
+    _, metrics_df, preds_df = train_supervised(
         eval_df=eval_df,
         feature_sets=feature_sets,
         dataset_name=args.dataset_name,
         output_path=args.output_path,
     )
 
-    # Save outputs
-    os.makedirs(args.output_path, exist_ok=True)
     metrics_df.to_csv(os.path.join(args.output_path, "metrics.csv"), index=False)
     preds_df.to_csv(os.path.join(args.output_path, "preds.csv"), index=False)
 
-    print("Training finished. Results saved in:", args.output_path)
-
-
-if __name__ == "__main__":
-    main()
+    print(f"Finished supervised training → {args.output_path}")
