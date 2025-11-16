@@ -536,7 +536,14 @@ def heritability(logger=None):
     if not os.path.exists(filepath_prefix):
         os.makedirs(filepath_prefix)
 
-    if not os.path.exists(fullpath_baseline.split(".tgz")[0]):
+    if not all(
+        [
+            os.path.exists(
+                os.path.join(filepath_prefix, f"baselineLD.{i}.l2.ldscore.gz")
+            )
+            for i in range(1, 23)
+        ]
+    ):
         if not os.path.exists(fullpath_baseline):
             _log(f"Downloading baseline LD scores to {fullpath_baseline}...")
             download_url(
