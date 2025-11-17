@@ -41,7 +41,7 @@ def main():
     predict_parser = subparsers.add_parser("predict")
     predict_parser = predict.add_argument(predict_parser)
 
-    trainxgb_parser = subparsers.add_parser('train_xgb')
+    trainxgb_parser = subparsers.add_parser('train-xgb')
     trainxgb_parser = train_xgb.add_parser(trainxgb_parser)
 
     parsed_args = parser.parse_args()

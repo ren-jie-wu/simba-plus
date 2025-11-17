@@ -4,7 +4,8 @@ import argparse
 import anndata as ad
 import pandas as pd
 import os
-
+from simba_plus.discovery import build_evalset, model_training, plot_utils
+import pyranges as pr
 from simba_plus.predict_utils.overlap_snps import find_snp_peak_overlaps
 from simba_plus.predict_utils.overlap_regions import find_region_peak_overlaps
 from simba_plus.predict_utils.build_candidates import build_candidate_peaks
@@ -71,6 +72,120 @@ def predict(
         links = region_meta.merge(links, on="Peak", how="left")
 
     return links
+
+## load data
+def load_crispr_eval(adata_CG, adata_CP, crispr_file, model_dir, output_path, 
+                     window_size=500_000, 
+                     celltype_specific: bool = False,
+                     skip_uncertain: bool = True,
+                     use_distance_weight: bool = False,):
+    
+    # construct candidate peak-gene links
+    links = pgl.get_peak_gene_links(
+        peaks=list(adata_CP.var_names),
+        genes=list(adata_CG.var_names),
+        cis_window=window_size,
+    )
+    # build crispr evaluation set
+    crispr_eval_df = build_evalset.build_crispr_evalset(
+        candidate=links,
+        crispr_file=crispr_file,
+        output_csv=output_path
+    )
+
+    adata_C_path = os.path.join(model_dir, "adata_C.h5ad")
+    adata_G_path = os.path.join(model_dir, "adata_G.h5ad")
+    adata_P_path = os.path.join(model_dir, "adata_P.h5ad")
+
+    crispr_eval_df = score.add_simba_plus_features(
+        eval_df=crispr_eval_df,
+        adata_C_path=adata_C_path,
+        adata_G_path=adata_G_path,
+        adata_P_path=adata_P_path,
+        gene_col="Gene",
+        peak_col="Peak",
+        celltype_specific=celltype_specific,
+        skip_uncertain=skip_uncertain,
+        use_distance_weight=use_distance_weight,
+    )
+
+    crispr_eval_df.to_csv(output_path)
+    return crispr_eval_df
+
+def load_eqtl_eval(adata_CG, adata_CP, model_dir, output_path, tissue="Whole_Blood", pip_pos=0.5, pip_neg=0.01, 
+                   window_size=500_000,                     
+                   celltype_specific: bool = False, skip_uncertain: bool = True,
+                   use_distance_weight: bool = False,):
+    # construct candidate peak-gene links
+    links = pgl.get_peak_gene_links(
+        peaks=list(adata_CP.var_names),
+        genes=list(adata_CG.var_names),
+        cis_window=window_size,
+    )
+
+    # download necessary data
+    build_evalset._download_and_extract_1000g(download_dir=f"{output_path}/1000genome")
+    build_evalset._download_and_extract_gtex(download_dir=f"{output_path}/gtex")
+    build_evalset._download_liftover_resources(download_dir=f"{output_path}/liftover_resources")
+    
+    # process data
+    bed_files = build_evalset._process_1000g_bim_frq(plink_dir=f"{output_path}/1000genome/1000G_EUR_Phase3_plink", 
+                                     frq_dir=f"{output_path}/1000genome/1000G_Phase3_frq", 
+                                     maf_threshold=0.01)
+
+    valid_chroms = [f"chr{i}" for i in range(1, 23)]
+    genomes_df = (
+        pd.concat(
+            [pd.read_csv(f, sep="\t", header=None, names=["CHROM", "START", "END"]) for f in bed_files],
+            ignore_index=True
+        )
+        .assign(CHROM=lambda d: "chr" + d["CHROM"].astype(str))
+        .loc[lambda d: d["CHROM"].isin(valid_chroms)]
+    ) # 1000G variants in BED format
+
+    ## liftOver 1000G variants to hg38
+    CHAIN_FILE = f"{output_path}/liftover_resources/hg19ToHg38.over.chain.gz"
+    LIFTOVER_BIN = f"{output_path}/liftover_resources/liftOver" # downloaded version
+    OUT_DIR = f"{output_path}/liftover"
+    lifted_df = build_evalset.liftover_df(genomes_df, CHAIN_FILE, LIFTOVER_BIN, out_dir=OUT_DIR, prefix="example")
+    lifted_df = lifted_df[lifted_df['CHROM'].isin(valid_chroms)] # remove alternate contigs, scaffolds, etc., keep only chr1-22
+    variants_bed = pr.PyRanges(
+        lifted_df.rename(columns={"CHROM": "Chromosome", "START": "Start", "END": "End"})
+    ) # convert to PyRanges object ready for later overlap operations with peaks
+
+    # now process GTEx data
+    gtex_df = build_evalset.load_gtex_finemap(
+        f"{output_path}/gtex/GTEx_49tissues_release1.tsv.bgz",
+        tissue=tissue,
+        method="SUSIE"
+    )
+
+    # define positive / negative training sets
+    pos_training = gtex_df[gtex_df["pip"] > pip_pos].drop_duplicates("pair")
+    neg_training = gtex_df[gtex_df["pip"] < pip_neg].drop_duplicates("pair")
+
+    overlap_df = build_evalset.overlap_variants_with_peaks(links, variants_bed) # overlap 1000G variants with peaks
+    eqtl_eval_df = build_evalset.merge_and_label_eqtl_pairs(links, overlap_df, pos_training, neg_training) # label positive / negative pairs based on GTEx PIP score
+    
+    adata_C_path = os.path.join(model_dir, "adata_C.h5ad")
+    adata_G_path = os.path.join(model_dir, "adata_G.h5ad")
+    adata_P_path = os.path.join(model_dir, "adata_P.h5ad")
+
+    eqtl_eval_df = score.add_simba_plus_features(
+        eval_df=eqtl_eval_df,
+        adata_C_path=adata_C_path,
+        adata_G_path=adata_G_path,
+        adata_P_path=adata_P_path,
+        gene_col="Gene_name",
+        peak_col="Peak",
+        celltype_specific=celltype_specific,
+        skip_uncertain=skip_uncertain,
+        use_distance_weight=use_distance_weight,
+    )
+    
+    eqtl_eval_df.to_csv(output_path)
+    
+    return eqtl_eval_df
 
 
 # ======================================================
