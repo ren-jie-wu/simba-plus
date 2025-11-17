@@ -74,26 +74,48 @@ def predict(
     return links
 
 ## load data
-def load_crispr_eval(adata_CG, adata_CP, crispr_file, output_path, 
-                     window_size=500_000,):
-    
-    # construct candidate peak-gene links
+def load_crispr_eval(
+    adata_CG, adata_CP, crispr_file, output_path,
+    window_size=500_000,
+):
+    # 1. Candidate peak-gene links
     links = pgl.get_peak_gene_links(
         peaks=list(adata_CP.var_names),
         genes=list(adata_CG.var_names),
         cis_window=window_size,
     )
-    # build crispr evaluation set
+
+    # 2. Build CRISPR eval DF (but we do NOT save it because we only want reduced TSV)
     crispr_eval_df = build_evalset.build_crispr_evalset(
         candidate=links,
         crispr_file=crispr_file,
-        output_csv=output_path
+        output_csv=None,               # <-- DO NOT WRITE ANY FILE HERE
     )
-    # convert to required format for predict input
-    crispr_eval_df['regionid'] = crispr_eval_df['crispr_chrom'].astype(str) + '_' + crispr_eval_df['crispr_start'].astype(str) + '_' + crispr_eval['crispr_end'].astype(str) + '_' + crispr_eval['crispr_gene'].astype(str) + '_' + crispr_eval['label'].astype(str)
-    crispr_eval_df.rename(columns={'crispr_start':'start','crispr_end':'end', 'crispr_chrom':'chr'},inplace=True)
-    crispr_input = crispr_eval_df[['regionid', 'chr', 'start','end']].copy()
-    crispr_input.to_csv(output_path, sep='\t',index=False)
+
+    # 3. Correct regionid construction
+    crispr_eval_df["regionid"] = (
+        crispr_eval_df["crispr_chrom"].astype(str) + "_" +
+        crispr_eval_df["crispr_start"].astype(str) + "_" +
+        crispr_eval_df["crispr_end"].astype(str) + "_" +
+        crispr_eval_df["crispr_gene"].astype(str) + "_" +
+        crispr_eval_df["label"].astype(str)
+    )
+
+    # 4. Rename columns
+    crispr_eval_df = crispr_eval_df.rename(
+        columns={
+            "crispr_chrom": "chr",
+            "crispr_start": "start",
+            "crispr_end": "end",
+        }
+    )
+
+    # 5. Keep ONLY the columns needed by SIMBA+ predict
+    crispr_input = crispr_eval_df[["regionid", "chr", "start", "end"]].copy()
+
+    # 6. Write the final TSV
+    crispr_input.to_csv(output_path, sep="\t", index=False)
+
     return crispr_eval_df
 
 def load_eqtl_eval(adata_CG, adata_CP, output_path, tissue="Whole_Blood", pip_pos=0.5, pip_neg=0.01, 
