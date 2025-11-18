@@ -195,7 +195,7 @@ def get_gexp_metrics(
     corrs = []
     spearman_corrs = []
     for i in range(res_out_norm.shape[1]):
-        if gexp_mean[i] < 3:
+        if gexp_mean[i] <= 5:
             continue
         nonzero_idx = mask[:, i]
         if nonzero_idx.sum() == 0:
