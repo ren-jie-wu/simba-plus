@@ -36,7 +36,7 @@ from simba_plus.heritability.get_residual import (
     get_residual,
     get_peak_residual,
 )
-from simba_plus.evaluate import eval, pretty_print
+from simba_plus.evaluate import evaluate_model, pretty_print
 import torch.multiprocessing
 
 torch.multiprocessing.set_sharing_strategy("file_system")
@@ -115,6 +115,7 @@ def run(
     early_stopping_steps: int = 10,
     max_epochs: int = 1000,
     verbose: bool = False,
+    negative_sampling_fold: int = 1,
 ):
     """Train the model with the given parameters.
     If get_adata is True, it will only load the gene/peak/cell AnnData object from the checkpoint.
@@ -149,7 +150,6 @@ def run(
 
     logger.info(f"Data loaded to {data['cell'].n_id.device}: {data}")
     dim_u = hidden_dims
-    negative_sampling_fold = 1
 
     if get_adata:
         logger.info(
@@ -334,21 +334,7 @@ def run(
         peak_adata=adata_CP,
         logger=logger,
     )
-
-    def run_eval():
-        data_idx_path = f"{data_path.split('.dat')[0]}_data_idx.pkl"
-        metric_dict = eval(
-            model_path=last_model_path,
-            data_path=data_path,
-            index_path=data_idx_path,
-            batch_size=batch_size,
-            negative_sampling_fold=negative_sampling_fold,
-            device=device,
-            logger=logger,
-        )
-        pretty_print(metric_dict, logger=logger)
-        with open(f"{os.path.dirname(last_model_path)}/pred_dict.pkl", "wb") as file:
-            pkl.dump(metric_dict, file)
+    return last_model_path, logger
 
     logger.info("Starting evaluation with test data...")
     run_eval()
@@ -475,6 +461,24 @@ def save_files(
     )
 
 
+def run_eval(args, last_model_path, logger):
+    logger.info("Starting evaluation with test data...")
+    data_idx_path = f"{args.data_path.split('.dat')[0]}_data_idx.pkl"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    metric_dict = evaluate_model(
+        model_path=last_model_path,
+        data_path=args.data_path,
+        index_path=data_idx_path,
+        batch_size=args.batch_size,
+        negative_sampling_fold=args.negative_sampling_fold,
+        device=args.device,
+        logger=logger,
+    )
+    pretty_print(metric_dict, logger=logger)
+    with open(f"{os.path.dirname(last_model_path)}/pred_dict.pkl", "wb") as file:
+        pkl.dump(metric_dict, file)
+
+
 def main(args):
     check_args(args)
     kwargs = vars(args)
@@ -487,7 +491,9 @@ def main(args):
             nprocs=args.num_workers,
         )
         kwargs["ldsc_res"] = residuals
-    run(**kwargs)
+
+    last_model_path, logger = run(**kwargs)
+    run_eval(args, last_model_path, logger)
 
 
 def add_argument(parser):
@@ -530,6 +536,12 @@ def add_argument(parser):
         type=float,
         default=1.0,
         help="If provided with `sumstats`, weights the MSE loss for sumstat residuals.",
+    )
+    parser.add_argument(
+        "--negative-sampling-fold",
+        type=int,
+        default=1,
+        help="Fold of negative samples to use during training",
     )
     parser.add_argument(
         "--load-checkpoint",

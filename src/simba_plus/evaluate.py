@@ -282,7 +282,7 @@ def get_accessibility_metrics(
     return metrics
 
 
-def eval(
+def evaluate_model(
     model_path: str,
     data_path: str,
     device: str = "cpu",
@@ -459,7 +459,7 @@ def main(args, logger=None):
             metric_dict = pkl.load(file)
         pretty_print(metric_dict, logger=logger)
         return
-    metric_dict = eval(
+    metric_dict = evaluate_model(
         args.model_path,
         args.data_path,
         eval_split=args.eval_split,
