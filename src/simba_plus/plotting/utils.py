@@ -1,33 +1,16 @@
-from typing import List
+from typing import List, Literal, Optional
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import scanpy as sc
-
-
-def heritability_umap(
-    adata, tau_prefix="tau_z_", size=5, alpha=0.5, ncols=4, cmap="coolwarm", **kwargs
-):
-    draw_col = []
-    for col in adata.obs.columns:
-        if col.startswith(tau_prefix):
-            draw_col.append(col)
-    sc.pl.umap(
-        adata,
-        color=draw_col,
-        vcenter=0,
-        size=5,
-        alpha=0.5,
-        ncols=ncols,
-        cmap="coolwarm",
-        show=False,
-        **kwargs,
-    )
+import anndata as ad
 
 
 def enrichment(
     adata_G,
-    pheno,
+    enrichment_uns_key,
+    enrichment_key,
     adj_p_thres=0.1,
     n_max_terms=10,
     gene_sets: List[str] = [
@@ -43,7 +26,7 @@ def enrichment(
         len(gene_sets), 1, figsize=figsize, gridspec_kw={"hspace": 0.5}
     )
     for i, gene_set in enumerate(gene_sets):
-        pdf = adata_G.uns["pheno_enrichments"][pheno][gene_set]
+        pdf = adata_G.uns[enrichment_uns_key][enrichment_key][gene_set]
 
         pdf = (
             pdf.loc[pdf["Adjusted P-value"] < adj_p_thres]
@@ -65,7 +48,7 @@ def enrichment(
                 edgecolors="black",
             )
         )  # marker="-log10(FDR)", palette="Reds", edgecolor="black")
-        ax[i].set_title(f"{title_prefix}{pheno}\n{gene_set}")
+        ax[i].set_title(f"{title_prefix}{enrichment_key}\n{gene_set}")
         ax[i].invert_yaxis()
         ax[i].set_box_aspect(1.5)
 
