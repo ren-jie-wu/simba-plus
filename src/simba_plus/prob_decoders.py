@@ -159,7 +159,7 @@ class BernoulliDataDecoder(ProximityDecoder):
         # b: torch.Tensor, l: Optional[torch.Tensor]
     ) -> D.Normal:
         cos = torch.nn.CosineSimilarity()
-        scale = F.softplus(src_logscale) * F.softplus(dst_logscale)
+        scale = torch.exp(src_logscale) * torch.exp(dst_logscale)
         logit = scale * cos(u, v) + src_bias + dst_bias
         try:
             d = D.Bernoulli(logits=logit)
@@ -200,9 +200,12 @@ class NegativeBinomialDataDecoder(ProximityDecoder):
         dst_std=None,
         # b: torch.Tensor, l: Optional[torch.Tensor]
     ) -> D.Normal:
-        scale = F.softplus(src_logscale) * F.softplus(dst_logscale)
+        scale = torch.exp(src_logscale + dst_logscale)
         cos = torch.nn.CosineSimilarity()
-        loc = torch.exp(scale * cos(u, v) + src_bias + dst_bias)
+        mean_logit = torch.clamp(
+            scale * cos(u, v) + src_bias + dst_bias, min=-float("inf"), max=88
+        )
+        loc = torch.exp(mean_logit)
         # std = torch.exp((src_std + dst_std).clamp(MIN_LOGSTD, MAX_LOGSTD))
         std = torch.exp(dst_std + src_std)
         # return D.Normal(scale * (u * v).sum(axis=1) + src_bias + dst_bias, 0.1)

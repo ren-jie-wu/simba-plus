@@ -186,7 +186,7 @@ def test_simba_eval_command():
 @pytest.mark.order(5)
 def test_simba_heritability_command():
 
-    prefix = f"{os.path.dirname(__file__)}/output/"
+    prefix = f"{os.path.dirname(__file__)}/output/simba+hetdata.dat_100K.d3.randinit.checkpoints/"
     sumstats = f"{os.path.dirname(__file__)}/../data/sumstats/sumstats_rdw.txt"
     cmd = [
         "simba+",
