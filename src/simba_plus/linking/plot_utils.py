@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from simba_plus.discovery.model_training import enrichment_recall, auerc_old
+from simba_plus.linking.model_training import enrichment_recall, auerc_old
 
 
 # ----------------------------

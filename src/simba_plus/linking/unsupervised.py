@@ -1,17 +1,11 @@
-# src/simba_plus/predict.py
-
-import argparse
 import anndata as ad
 import pandas as pd
 import os
-from simba_plus.discovery import build_evalset, model_training, plot_utils
+from simba_plus.linking import build_evalset
 import pyranges as pr
-from simba_plus.predict_utils.overlap_snps import find_snp_peak_overlaps
-from simba_plus.predict_utils.overlap_regions import find_region_peak_overlaps
-from simba_plus.predict_utils.build_candidates import build_candidate_peaks
-from simba_plus.discovery import candidate_links as pgl
-from simba_plus.discovery import add_features as score
-
+from simba_plus.linking._utils import find_snp_peak_overlaps, find_region_peak_overlaps, build_candidate_peaks
+from simba_plus.linking import candidate_links as pgl
+from simba_plus.linking import add_features as score
 
 def peak_gene_link_unsupervised(
     adata_CG,
@@ -25,18 +19,75 @@ def peak_gene_link_unsupervised(
     skip_uncertain=True,
     use_distance_weight=False,
 ):
+    """
+    Unsupervised SIMBA+ peak–gene link prediction.
 
-    # -------------------------------
-    # 1. SNP + region → peak overlaps
-    # -------------------------------
+    Performs the full SIMBA+ inference pipeline:
+      1. Compute overlaps between SNPs/regions and ATAC peaks.
+      2. Form candidate peak–gene pairs within a cis window.
+      3. Compute SIMBA+ path scores for each pair.
+      4. Attach SNP/region annotations (if provided).
+
+    Parameters
+    ----------
+    adata_CG : anndata.AnnData
+        Gene-level SIMBA+ AnnData containing gene embeddings and metadata.
+
+    adata_CP : anndata.AnnData
+        Peak-level SIMBA+ AnnData containing peak embeddings and metadata.
+
+    model_dir : str
+        Directory containing trained SIMBA+ outputs:
+            - adata_C.h5ad
+            - adata_G.h5ad
+            - adata_P.h5ad
+
+    snps : pandas.DataFrame, optional
+        DataFrame with SNP locations.
+        Required columns: ["snpid", "chr", "pos"].
+        If None, SNP scoring is skipped.
+
+    regions : pandas.DataFrame, optional
+        DataFrame of genomic regions.
+        Required columns: ["regionid", "chr", "start", "end"].
+
+    window_size : int, default 500000
+        Genomic distance (bp) for forming candidate peak–gene pairs.
+
+    celltype_specific : bool, default False
+        If True, compute separate SIMBA+ scores per cell type.
+
+    skip_uncertain : bool, default True
+        Exclude cells with uncertain/unknown annotations.
+
+    use_distance_weight : bool, default False
+        Multiply SIMBA+ scores by (1 / distance_to_TSS).
+
+    Returns
+    -------
+    pandas.DataFrame
+        Peak–gene link table containing:
+        - Peak
+        - Gene_name
+        - SIMBA+ features
+        - optional SNP/region metadata
+        - Distance_to_TSS
+        - additional covariates produced by add_simba_plus_features()
+
+    Notes
+    -----
+    This function **does not** require a supervised model and performs purely
+    unsupervised SIMBA+ scoring.
+
+    """
+
+    # 1. Overlaps
     region_hits, region_meta = find_region_peak_overlaps(regions, adata_CP)
     snp_hits, snp_meta = find_snp_peak_overlaps(snps, adata_CP)
 
     peak_like = build_candidate_peaks(adata_CP, snp_hits, region_hits)
 
-    # -------------------------------
-    # 2. Candidate links
-    # -------------------------------
+    # 2. Candidate peak–gene links
     links = pgl.get_peak_gene_links(
         peaks=peak_like,
         genes=list(adata_CG.var_names),
@@ -47,9 +98,7 @@ def peak_gene_link_unsupervised(
         print("No candidate peak–gene links found.")
         return links
 
-    # -------------------------------
-    # 3. Add SIMBA+ scores
-    # -------------------------------
+    # 3. Add SIMBA+ path scores
     links = score.add_simba_plus_features(
         eval_df=links,
         adata_C_path=os.path.join(model_dir, "adata_C.h5ad"),
@@ -62,12 +111,9 @@ def peak_gene_link_unsupervised(
         use_distance_weight=use_distance_weight,
     )
 
-    # -------------------------------
-    # 4. Attach annotations
-    # -------------------------------
+    # 4. Attach SNP/region annotations
     if snp_meta is not None:
         links = snp_meta.merge(links, on="Peak", how="left")
-
     if region_meta is not None:
         links = region_meta.merge(links, on="Peak", how="left")
 
@@ -247,7 +293,6 @@ def add_argument(parser):
             "Multiply SIMBA+ path scores by a distance prior (1 / Distance_to_TSS). "
         ),
     )
-
 
     parser.add_argument("--output", type=str, required=True,
                         help="Output CSV path")

@@ -9,9 +9,9 @@ import simba_plus.train as train
 import simba_plus.evaluate as evaluate
 import simba_plus.heritability.create_report as create_heritability_report
 
-import simba_plus.predict as predict
-import simba_plus.train_xgboost as train_xgb
-
+import simba_plus.linking.unsupervised as peak_gene_link_unsupervised
+import simba_plus.linking.supervised_train as peak_gene_link_train
+import simba_plus.linking.supervised_predict as peak_gene_link_predict
 
 def main():
     if len(sys.argv) < 2:
