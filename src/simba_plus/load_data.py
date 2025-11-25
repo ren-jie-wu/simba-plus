@@ -9,6 +9,27 @@ import argparse
 
 
 def validate_input(adata_CG, adata_CP):
+    """
+    Validate and extract dimensions from input AnnData objects.
+
+    This function compares cell indices between adata_CG (cell x gene matrix)
+    and adata_CP (cell x peak matrix), and makes sure that, if both are provided,
+    the .obs indices are aligned. If not, adata_CP will be subset/reordered
+    to match adata_CG.obs.index.
+
+    It returns the number of cells, genes, peaks, and motifs (-1 if not determined).
+
+    Args:
+        adata_CG (anndata.AnnData or None): AnnData for cell by gene data.
+        adata_CP (anndata.AnnData or None): AnnData for cell by peak data.
+
+    Returns:
+        tuple:
+            n_cells (int): Number of cells determined from provided AnnDatas.
+            n_genes (int): Number of genes (-1 if adata_CG not given).
+            n_peaks (int): Number of peaks (-1 if adata_CP not given).
+            n_motifs (int): Placeholder, always -1.
+    """
     n_cells = n_genes = n_peaks = n_motifs = -1
     if adata_CG is not None:
         n_cells, n_genes = adata_CG.shape
@@ -24,6 +45,18 @@ def validate_input(adata_CG, adata_CP):
 
 
 def type_attribute(data):
+    """
+    Convert node attributes to PyTorch tensors.
+
+    This function converts all node attributes in a HeteroData object to PyTorch tensors.
+    It ensures that the attributes are in the correct format for use in a PyTorch model.
+
+    Args:
+        data (torch_geometric.data.HeteroData): The HeteroData object containing the node attributes.
+
+    Returns:
+        torch_geometric.data.HeteroData: The HeteroData object with node attributes converted to PyTorch tensors.
+    """
     for node_type in data.node_types:
         data[node_type].x = torch.tensor(data[node_type].x, dtype=torch.float)
     return data
@@ -35,6 +68,22 @@ def make_sc_HetData(
     cell_cont_covariate_to_include: Dict[str, Iterable[str]] = None,
     cell_cat_cov: str = None,
 ):
+    """
+    Create a sc-HetData object from AnnData objects.
+
+    This function creates a sc-HetData object from two AnnData objects, one for cell by gene data and one for cell by peak data.
+    All node embeddings are initialized to zero. Edge attributes are set to the raw expression values (adata_CG) and binary accessibility values (adata_CP).
+    It also includes optional covariates for the cell attributes.
+
+    Args:
+        adata_CG (anndata.AnnData or None): AnnData for cell by gene data.
+        adata_CP (anndata.AnnData or None): AnnData for cell by peak data.
+        cell_cont_covariate_to_include (Dict[str, Iterable[str]] or None): Dictionary of continuous covariates to include for the cell attributes.
+        cell_cat_cov (str or None): Name of the categorical covariate to use for the cell attributes.
+
+    Returns:
+        torch_geometric.data.HeteroData: The sc-HetData object created from the AnnData objects.
+    """
     if not adata_CG and not adata_CP:
         raise ValueError("No data provided for edge construction")
     n_cells, n_genes, n_peaks, n_motifs = validate_input(adata_CG, adata_CP)
@@ -110,6 +159,19 @@ def make_sc_HetData(
 
 
 def load_from_path(path: str, device="cpu") -> HeteroData:
+    """
+    Load a HeteroData object from a given path and move it to the specified device.
+
+    This function loads a HeteroData object from a given path and moves it to the specified device.
+    It also assigns node IDs and converts the attributes to PyTorch tensors.
+
+    Args:
+        path (str): Path to the HeteroData object file.
+        device (str): Device to move the HeteroData object to.
+
+    Returns:
+        torch_geometric.data.HeteroData: The HeteroData object loaded from the given path and moved to the specified device.
+    """
     data = torch.load(path, map_location=device, weights_only=False)
     _assign_node_id(data)
     _make_tensor(data, device=device)
@@ -142,6 +204,15 @@ def add_argument(parser):
 
 
 def main(args):
+    """
+    Create a sc-HetData object from AnnData objects and save it to a given path.
+
+    This function creates a sc-HetData object from two AnnData objects, one for cell by gene data and one for cell by peak data.
+    It also includes optional covariates for the cell attributes.
+
+    Args:
+        args (argparse.Namespace): Command line arguments.
+    """
     dat = make_sc_HetData(
         adata_CG=ad.read_h5ad(args.gene_adata) if args.gene_adata else None,
         adata_CP=ad.read_h5ad(args.peak_adata) if args.peak_adata else None,
