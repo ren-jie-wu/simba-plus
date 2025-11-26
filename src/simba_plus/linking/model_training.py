@@ -367,9 +367,12 @@ def train_and_save_models(
         if "train_y" in feature_key:
             continue  # Skip target key
         print(f"\n=== Training model: {feature_key} ===")
+        train_x = data[feature_key]
+        train_y = data[target_key]
+
         fold_models, results_df, prediction_results, metrics_summary, feature_names = \
             train_xgboost_model_leave_one_chr_out(
-                data[feature_key], data[target_key],
+                train_x, train_y,
                 beta=beta,
                 random_state=random_state,
                 n_search_iter=n_search_iter,
@@ -387,9 +390,36 @@ def train_and_save_models(
         # Save predictions and metrics
         preds_path = os.path.join(output_dir, f"{feature_key}_predictions.csv")
         prediction_results.to_csv(preds_path, index=False)
-
+        
+        # Save per-chromosome metrics
         per_chr_path = os.path.join(output_dir, f"{feature_key}_per_chromosome_metrics.csv")
         results_df.to_csv(per_chr_path, index=False)
+
+        # Select best hyperparameters across folds
+        best_row = results_df.sort_values("Val AUERC", ascending=False).iloc[0]
+        best_hparams = best_row["Best Params"] # extract the best hyperparams across all folds
+        print(f"[{feature_key}] Selected global best hyperparameters:")
+        print(best_hparams)
+
+        # Retrain final model on full dataset
+        final_model, final_scaler = train_final_model_on_full_data(
+            data[feature_key][feature_names],
+            data[target_key],
+            best_hparams,
+            use_scaler=use_scaler
+        )
+
+        final_model_path = os.path.join(output_dir, f"{feature_key}_final_model.pkl")
+        joblib.dump(
+            {
+                "model": final_model,
+                "scaler": final_scaler,
+                "feature_names": feature_names,
+                "best_hyperparams": best_hparams,
+            },
+            final_model_path
+        )
+        print(f"[{feature_key}] Saved final model → {final_model_path}")
 
         # Metadata
         meta = {
@@ -397,7 +427,9 @@ def train_and_save_models(
             "feature_key": feature_key,
             "feature_names": feature_names,
             "fold_model_paths": model_paths,
-            "metrics": metrics_summary,
+            "final_model_path": final_model_path,
+            "metrics_summary": metrics_summary,
+            "best_hyperparams": best_hparams,
             "settings": {
                 "beta": beta,
                 "random_state": random_state,
@@ -409,11 +441,13 @@ def train_and_save_models(
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=2)
 
+        # Store summary for load_results() compatibility
         results[feature_key] = {
             "fold_model_paths": model_paths,
             "predictions_path": preds_path,
             "per_chromosome_metrics_path": per_chr_path,
             "metadata_path": meta_path,
+            "final_model_path": final_model_path,
             **metrics_summary
         }
 
@@ -424,6 +458,26 @@ def train_and_save_models(
     print(f"\nSaved summary → {results_path}")
 
     return results
+
+def load_trained_xgboost(model_path: str):
+    """Load final trained XGBoost model (and scaler/feature list)."""
+    return joblib.load(model_path)
+
+
+def predict_with_xgboost(model_bundle, new_df: pd.DataFrame):
+    """
+    Predict probability in new_df using a trained model bundle.
+    - model_bundle: {"model", "scaler", "feature_names"}
+    """
+    clf = model_bundle["model"]
+    scaler = model_bundle["scaler"]
+    feature_names = model_bundle["feature_names"]
+
+    X = new_df[feature_names].copy()
+    if scaler is not None:
+        X = scaler.transform(X)
+
+    return clf.predict_proba(X)[:, 1]
 
 
 def load_results(output_dir: str):
@@ -455,3 +509,28 @@ def load_results(output_dir: str):
             )
 
     return results, pd.concat(all_results_list, ignore_index=True), all_predictions
+
+
+def train_final_model_on_full_data(
+    feature_df, label_df, best_params, use_scaler=False
+):
+    """Retrain final XGBoost model on all available data using best hyperparameters."""
+    
+    X = feature_df.copy()
+    y = label_df["label"].values
+
+    scaler = None
+    if use_scaler:
+        scaler = RobustScaler()
+        X = scaler.fit_transform(X)
+    else:
+        X = X.values
+
+    clf = xgb.XGBClassifier(
+        **best_params,
+        objective="binary:logistic",
+        eval_metric="aucpr"
+    )
+    clf.fit(X, y)
+
+    return clf, scaler

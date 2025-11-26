@@ -9,15 +9,17 @@ import simba_plus.train as train
 import simba_plus.evaluate as evaluate
 import simba_plus.post_training.factors as factors
 import simba_plus.heritability.create_report as create_heritability_report
-import simba_plus.predict as predict
-import simba_plus.train_xgboost as train_xgb
+
+import simba_plus.linking.unsupervised as peak_gene_link_unsupervised
+import simba_plus.linking.supervised_train as peak_gene_link_train
+import simba_plus.linking.supervised_predict as peak_gene_link_predict
 
 
 def main():
     if len(sys.argv) < 2:
         print("Usage: simba+ <subcommand> [args]")
         print(
-            "Available subcommands: load_data, train, eval, predict, train-xgb, heritability"
+            "Available subcommands: load_data, train, eval, unsupervised-predict, supervised-train, supervised-predict, heritability"
         )
         sys.exit(1)
 
@@ -37,17 +39,24 @@ def main():
     eval_parser = subparsers.add_parser("eval")
     eval_parser = evaluate.add_argument(eval_parser)
 
-    factor_parser = subparsers.add_parser("factors")
-    factor_parser = factors.add_argument(factor_parser)
+    factors_parser = subparsers.add_parser("factors")
+    factors_parser = evaluate.add_argument(factors_parser)
 
     heritability_parser = subparsers.add_parser("heritability")
     heritability_parser = create_heritability_report.add_argument(heritability_parser)
 
-    predict_parser = subparsers.add_parser("predict")
-    predict_parser = predict.add_argument(predict_parser)
+    unsupervised_predict_parser = subparsers.add_parser("unsupervised-predict")
+    unsupervised_predict_parser = peak_gene_link_unsupervised.add_argument(
+        unsupervised_predict_parser
+    )
 
-    trainxgb_parser = subparsers.add_parser("train-xgb")
-    trainxgb_parser = train_xgb.add_parser(trainxgb_parser)
+    supervised_train_parser = subparsers.add_parser("supervised-train")
+    supervised_train_parser = peak_gene_link_train.add_parser(supervised_train_parser)
+
+    supervised_predict_parser = subparsers.add_parser("supervised-predict")
+    supervised_predict_parser = peak_gene_link_train.add_parser(
+        supervised_predict_parser
+    )
 
     parsed_args = parser.parse_args()
     subcommand = parsed_args.subcommand
@@ -62,10 +71,12 @@ def main():
         factors.main(parsed_args)
     elif subcommand == "heritability":
         create_heritability_report.main(parsed_args)
-    elif subcommand == "predict":
-        predict.main(parsed_args)
-    elif subcommand == "train-xgb":
-        train_xgb.main(parsed_args)
+    elif subcommand == "unsupervised-predict":
+        unsupervised_predict_parser.main(parsed_args)
+    elif subcommand == "supervised-train":
+        supervised_train_parser.main(parsed_args)
+    elif subcommand == "supervised-predict":
+        supervised_predict_parser.main(parsed_args)
 
 
 if __name__ == "__main__":
