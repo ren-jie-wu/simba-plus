@@ -29,62 +29,114 @@ torch_geometric.seed_everything(2025)
 # https://pytorch-lightning.readthedocs.io/en/stable/model/train_model_basic.html
 
 
+def get_run_id(data_path, 
+    batch_size,
+    n_batch_sampling,
+    layers,
+    project_decoder,
+    reweight_rarecell,
+    promote_indep,
+    hsic_lam,
+    hidden_dims,
+    edgetype_specific_scale,
+    edgetype_specific_std,
+    edgetype_specific_bias,
+    nonneg,
+    pos_scale,
+):
+    run_id  = f"pl_{os.path.basename(data_path).split('.')[0]}_{human_format(batch_size)}{'x'+str(n_batch_sampling) if n_batch_sampling > 1 else ''}"
+    run_id += f"{'_' + str(layers) + 'layers' if layers > 1 else ''}_prox{'.noproj' if not project_decoder else ''}{'.rw' if reweight_rarecell else ''}"
+    run_id += f"{'.indep2_' + format(hsic_lam, '1.0e') if promote_indep else ''}{'.d' + str(hidden_dims) if hidden_dims != 50 else ''}"
+    run_id += f"{'.enss' if not edgetype_specific_scale else ''}{'.enst' if not edgetype_specific_std else ''}{'.ensb' if not edgetype_specific_bias else ''}"
+    run_id += f"{'.nn' if nonneg else ''}{'.ps' if pos_scale else ''}.randinit"
+    return run_id
+
+
 def run(
-    batch_size=1_000_000,
+    # specified in the CLI
+    data_path: str,
+    output_dir: str,
+    adata_CG=None,
+    adata_CP=None,
+    batch_size=100_000,
+    load_checkpoint=False,
+    promote_indep=False,
+    hidden_dims=50,
+    hsic_lam=0.01,
+    get_adata: bool = False,
+    pos_scale: bool = False,
+    # others
     layers=1,
     n_batch_sampling=1,
-    output_dir="rna",
-    data_path="../../data/atac/atac_buenrostro2018/20240808_atac_lsi_HetData.dat",
-    load_checkpoint=False,
     reweight_rarecell=False,
     n_kl_warmup=10,
     project_decoder=False,
-    promote_indep=False,
-    hidden_dims=50,
-    hsic_lam=0.1,
     edgetype_specific_scale=True,
     edgetype_specific_std=True,
     edgetype_specific_bias=True,
     nonneg=False,
-    adata_CG=None,
-    adata_CP=None,
-    get_adata: str = False,
-    pos_scale: bool = False,
 ):
-    """Train the model with the given parameters.
-    If get_adata is True, it will only load the gene/peak/cell AnnData object from the checkpoint.
-    Parameters
-    ----------
-
     """
+    Train the model with the given parameters.
+
+    Args:
+        data_path (str): The path to the data file.
+        output_dir (str): The output directory.
+        adata_CG (str): The path to the cell adata file.
+        adata_CP (str): The path to the peak adata file.
+        batch_size (int): The batch size of edges for the DataLoader.
+        load_checkpoint (bool): Whether to load the checkpoint.
+        promote_indep (bool): Whether to promote the independence.
+        hidden_dims (int): The number of hidden dimensions.
+        hsic_lam (float): The HSIC regularization lambda.
+        get_adata (bool): Whether to get the adata.
+        pos_scale (bool): Whether to use the positive scale.
+        
+        layers (int): The model layer number. Passed to the LightningProxModel.
+        n_batch_sampling (int): dummy parameter for now.
+        reweight_rarecell (bool): Whether to reweight the rare cell.
+        n_kl_warmup (int): The number of KL warmup.
+        project_decoder (bool): Whether to project the decoder.
+        edgetype_specific_scale (bool): Whether to use the edgetype specific scale.
+        edgetype_specific_std (bool): Whether to use the edgetype specific std.
+        edgetype_specific_bias (bool): Whether to use the edgetype specific bias.
+        nonneg (bool): Whether to use the non-negative constraint.
+    Returns:
+        None
+    """
+
+    # I/O preparation
     print(f"batch size: {batch_size}")
-    run_id = f"pl_{os.path.basename(data_path).split('_HetData.dat')[0]}_{human_format(batch_size)}{'x'+str(n_batch_sampling) if n_batch_sampling > 1 else ''}{'_' + str(layers) + 'layers' if layers > 1 else ''}_prox{'.noproj' if not project_decoder else ''}{'.rw' if reweight_rarecell else ''}{'.indep2_' + format(hsic_lam, '1.0e') if promote_indep else ''}{'.d' + str(hidden_dims) if hidden_dims != 50 else ''}{'.enss' if not edgetype_specific_scale else ''}{'.enst' if not edgetype_specific_std else ''}{'.ensb' if not edgetype_specific_bias else ''}{'.nn' if nonneg else ''}{'.ps' if pos_scale else ''}.randinit"
+    run_id = get_run_id(data_path, batch_size, n_batch_sampling, layers, project_decoder, reweight_rarecell, promote_indep, hsic_lam, hidden_dims, 
+                        edgetype_specific_scale, edgetype_specific_std, edgetype_specific_bias, nonneg, pos_scale)
     print(f"RUN ID: {run_id}")
-    prefix = f"/data/pinello/PROJECTS/2022_12_GCPA/runs/{output_dir}/"
+    prefix = output_dir
     checkpoint_dir = f"{prefix}/{run_id}.checkpoints/"
     os.makedirs(checkpoint_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device} as device...")
     #torch.set_default_device(device)
-    data = simba_plus.load_data.load_from_path(data_path)
+    data = simba_plus.load_data.load_from_path(data_path, device=device)
     print(f"{data['cell'].x.device}: {data}")
     dim_u = hidden_dims
     num_neg_samples_fold = 1
 
+    # Only get adata from the last checkpoint
     if get_adata:
         logger.info("With `--get-adata` flag, only getting adata output from the last checkpoint...")
-        save_files(f"{prefix}{run_id}", cell_adata=adata_CG, peak_adata=adata_CP)
+        save_files(f"{prefix}/{run_id}", cell_adata=adata_CG, peak_adata=adata_CP)
         return
 
+    # Data preparation
     loss_df = None
     counts_dicts = None
 
     edge_types = data.edge_types
-    if "multiome" in data_path and "motif" in data.node_types:
-        edge_types = [
-            ("cell", "has_accessible", "peak"),
-            ("cell", "expresses", "gene"),
-        ]
+    # if "multiome" in data_path and "motif" in data.node_types:
+    #     edge_types = [
+    #         ("cell", "has_accessible", "peak"),
+    #         ("cell", "expresses", "gene"),
+    #     ]
 
     train_data_dict = {}
     val_data_dict = {}
@@ -333,6 +385,15 @@ def run(
 
 
 def human_format(num):
+    """
+    Convert a number to a human-readable format (e.g. 1000 -> 1K, 1000000 -> 1M)
+
+    Args:
+        num (int): The number to convert.
+    
+    Returns:
+        str: The human-readable format of the number.
+    """
     num = float(f"{num:.3g}")
     magnitude = 0
     while abs(num) >= 1000:
@@ -342,11 +403,21 @@ def human_format(num):
 
 
 def save_files(run_id, cell_adata=None, peak_adata=None):
+    """
+    Save the model parameters and the adata files (cell, peak, and gene embeddings) from the last checkpoint to the checkpoint directory.
+    
+    Args:
+        run_id (str): The run ID (with prefix). Used to load the last checkpoint and save the model parameters and adata files.
+        cell_adata (str): The path to the cell-gene adata file. Optional. Only used to provide cell metadata and gene metadata.
+        peak_adata (str): The path to the cell-peak adata file. Optional. Only used to provide cell metadata (if not provided in cell_adata) and peak metadata.
+    """
     adata_CG = ad.read_h5ad(cell_adata) if cell_adata is not None else None
     adata_CP = ad.read_h5ad(peak_adata) if peak_adata is not None else None
     model = LightningProxModel.load_from_checkpoint(
         f"{run_id}.checkpoints/last.ckpt", weights_only=True, map_location="cpu"
     )
+    
+    # Save the scale and bias of the peak/gene and cell
     if "peak" in model.encoder.__mu_dict__:
         np.save(
             f"{run_id}.checkpoints/peak_scale.npy",
@@ -381,6 +452,8 @@ def save_files(run_id, cell_adata=None, peak_adata=None):
             f"{run_id}.checkpoints/cell_gene_bias.npy",
             model.bias_dict["cell__cell_expresses_gene"].detach().numpy(),
         )
+    
+    # Save the cell, peak, and gene embedding adata and do umap
     cell_x = model.encoder.__mu_dict__["cell"].detach().cpu()
     obs_use = None
     if adata_CG is not None:
@@ -405,6 +478,7 @@ def save_files(run_id, cell_adata=None, peak_adata=None):
         },
         obs=adata_CP.var if adata_CP is not None else None,
     )
+
     if "gene" in model.encoder.__mu_dict__:
         adata_G = ad.AnnData(
             X=model.encoder.__mu_dict__["gene"].detach().cpu().numpy(),

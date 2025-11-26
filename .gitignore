@@ -1,2 +1,5 @@
-build/lib/simba_plus/*
-src/simba_plus.egg-info/*
+build
+*.egg-info
+*__pycache__
+README.md
+mytest

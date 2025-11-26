@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch_geometric.data import HeteroData
 import anndata as ad
-from simba_plus.utils import _assign_node_id, _make_tensor
+from simba_plus.utils import _assign_node_id, _make_tensor, is_integer_valued
 import argparse
 
 
@@ -138,7 +138,7 @@ def make_sc_HetData(
         ).squeeze()  # [num_edges_expresses, num_features_expresses]
         data["cell", "expresses", "gene"].edge_dist = (
             "NegativeBinomial"
-            if np.issubdtype(adata_CG.X.dtype, np.integer)
+            if is_integer_valued(adata_CG.X)
             else "Normal"
         )
 
