@@ -135,7 +135,7 @@ def structured_negative_sampling(
 
 
 def get_edge_split_data(data, data_path, edge_types, negative_sampling_fold, logger):
-    data_idx_path = f"{data_path.split(".dat")[0]}_data_idx.pkl"
+    data_idx_path = f"{data_path.split('.dat')[0]}_data_idx.pkl"
     if os.path.exists(data_idx_path):
         # Load existing train/val/test split
         train_idxs = {}

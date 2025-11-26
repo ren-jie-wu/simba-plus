@@ -390,7 +390,7 @@ def human_format(num):
     while abs(num) >= 1000:
         magnitude += 1
         num /= 1000.0
-    return f"{str(num).rstrip('0').rstrip('.')}{["", "K", "M", "B", "T"][magnitude]}"
+    return f"{str(num).rstrip('0').rstrip('.')}{['', 'K', 'M', 'B', 'T'][magnitude]}"
 
 
 def save_files(
