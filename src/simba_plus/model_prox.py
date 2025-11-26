@@ -609,7 +609,7 @@ class LightningProxModel(L.LightningModule):
                 batch.n_id_dict,
                 node_weights_dict=self.node_weights_dict,
             )
-            aux_kl_div_loss = self.aux_params.kl_div_loss(batch, self.node_weights_dict)
+            # aux_kl_div_loss = self.aux_params.kl_div_loss(batch, self.node_weights_dict)
             t1 = time.time()
             kl_scale = min(self.current_epoch + 1, self.n_kl_warmup - self.n_no_kl) / (
                 self.n_kl_warmup - self.n_no_kl
@@ -653,13 +653,13 @@ class LightningProxModel(L.LightningModule):
             on_step=True,
             on_epoch=True,
         )
-        self.log(
-            "aux_kl_div_loss",
-            aux_kl_div_loss / self.nll_scale,
-            batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
-            on_step=True,
-            on_epoch=True,
-        )
+        # self.log(
+        #     "aux_kl_div_loss",
+        #     aux_kl_div_loss / self.nll_scale,
+        #     batch_size=sum([v.shape[1] for v in batch.edge_index_dict.values()]),
+        #     on_step=True,
+        #     on_epoch=True,
+        # )
         # aux_reg_loss = self.aux_params.regularization_loss(batch) * 1e-2
         # self.log(
         #     "aux_reg_loss",
@@ -671,7 +671,7 @@ class LightningProxModel(L.LightningModule):
         loss = (
             batch_nll_loss
             + batch_kl_div_loss / self.nll_scale
-            + aux_kl_div_loss / self.nll_scale
+            # + aux_kl_div_loss / self.nll_scale
             + herit_loss_value
             # + aux_reg_loss
         )

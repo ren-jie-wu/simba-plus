@@ -13,6 +13,9 @@ from simba_plus.utils import setup_logging
 from simba_plus.heritability.utils import get_overlap, enrichment_analysis
 from simba_plus.heritability.ldsc import run_ldsc_l2, run_ldsc_h2
 from simba_plus.heritability.get_taus import get_tau_z_dep
+import simba_plus.plotting.heritability
+from matplotlib.backends.backend_pdf import PdfPages
+import matplotlib.pyplot as plt
 
 
 snp_pos_path = f"{os.path.dirname(__file__)}/../../../data/ldsc_data/1000G_Phase3_plinkfiles/ref.txt"
@@ -161,10 +164,20 @@ def run_ldsc(
     )
 
 
-def load_data(prefix, version_suffix):
-    adata_C = ad.read_h5ad(f"{prefix}/adata_C{version_suffix}.h5ad")
+def load_data(prefix, version_suffix, logger):
+    cell_anndata_path = f"{prefix}/adata_C{version_suffix}_annotated.h5ad"
+    if not os.path.exists(cell_anndata_path):
+        cell_anndata_path = f"{prefix}/adata_C{version_suffix}.h5ad"
+    gene_anndata_path = f"{prefix}/adata_G{version_suffix}_annotated.h5ad"
+    if not os.path.exists(gene_anndata_path):
+        logger.warn(
+            f"Using unannotated cell anndata file: {cell_anndata_path}. To see factor-level information, run `simba+ factor prefix` first."
+        )
+        gene_anndata_path = f"{prefix}/adata_G{version_suffix}.h5ad"
+
+    adata_C = ad.read_h5ad(cell_anndata_path)
     adata_P = ad.read_h5ad(f"{prefix}/adata_P{version_suffix}.h5ad")
-    adata_G = ad.read_h5ad(f"{prefix}/adata_G{version_suffix}.h5ad")
+    adata_G = ad.read_h5ad(gene_anndata_path)
     # Load model and check scale
     adata_P.layers["X_normed"] = (
         adata_P.X / np.linalg.norm(adata_P.X.astype(np.float64), axis=1)[:, None]
@@ -180,13 +193,26 @@ def load_data(prefix, version_suffix):
     return adata_C, adata_P, None
 
 
-def assign_heritability_scores(adata_C, sumstat_paths, herit_result_prefix):
+def assign_heritability_scores(
+    adata_C, sumstat_paths, herit_result_prefix, return_raw=False
+):
     cell_cov = adata_C.layers["X_normed"]
+    if return_raw:
+        adata_C.uns["factor_heritability"] = {}
     for k, v in sumstat_paths.items():
-        adata_C.obs[f"tau_z_{k}"], adata_C.obs[f"tau_{k}"] = get_tau_z_dep(
+        res = get_tau_z_dep(
             f"{herit_result_prefix}{os.path.basename(v).split('.gz')[0].split('.sumstat')[0]}.results",
             cell_cov,
+            return_raw=return_raw,
         )
+        if return_raw:
+            (
+                adata_C.obs[f"tau_z_{k}"],
+                adata_C.obs[f"tau_{k}"],
+                adata_C.uns["factor_heritability"][k],
+            ) = res
+        else:
+            adata_C.obs[f"tau_z_{k}"], adata_C.obs[f"tau_{k}"] = res
     return adata_C
 
 
@@ -199,7 +225,9 @@ def main(args, logger=None):
         args.output_dir = f"{os.path.dirname(args.adata_prefix)}/heritability/"
         os.makedirs(args.output_dir, exist_ok=True)
 
-    adata_C, adata_P, adata_G = load_data(args.adata_prefix, args.version_suffix)
+    adata_C, adata_P, adata_G = load_data(
+        args.adata_prefix, args.version_suffix, logger
+    )
     run_ldsc(
         adata_P.layers["X_normed"],
         adata_P.obs,
@@ -219,6 +247,7 @@ def main(args, logger=None):
         adata_C,
         sumstat_paths_dict,
         f"{args.output_dir}/h2/peak_loadings/",
+        return_raw=True,
     )
     adata_P = assign_heritability_scores(
         adata_P,
@@ -234,23 +263,47 @@ def main(args, logger=None):
         adata_G,
         sumstat_paths_dict,
     )
-    sumstat_paths = pd.read_csv(args.sumstats, sep="\t", header=None, index_col=0)[
-        1
-    ].to_dict()
-    p = sc.pl.umap(
-        adata_C,
-        color=[f"tau_z_{pheno}" for pheno in sumstat_paths.keys()],
-        vcenter=0,
-        size=5,
-        alpha=0.5,
-        ncols=4,
-        cmap="coolwarm",
-        show=False,
-    ).figure.savefig(f"{args.output_dir}/cell_type_heritability_scores.png")
+
+    output_filename = f"{args.output_dir}/heritability_report.pdf"
+    if "factor_enrichments_summary" in adata_G.uns:
+        factor_enrichment_labels = [
+            adata_G.uns["factor_enrichments_summary"][factor]
+            for factor in adata_G.var_names
+        ]
+    else:
+        factor_enrichment_labels = None
+    with PdfPages(output_filename) as pdf:
+        logger.info(f"Plotting factor-level heritability scores...")
+        figs = simba_plus.plotting.heritability.factor_herit(
+            adata_C,
+            pheno_list=list(sumstat_paths_dict.keys()),
+            figsize=(6, 2),
+            return_fig=True,
+            factor_enrichment_labels=factor_enrichment_labels,
+        )
+        for fig in figs:
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+        logger.info(f"Plotting cell-level heritability scores...")
+        fig = simba_plus.plotting.heritability.heritability_umap(
+            adata_C, celltype_label="cell_type", return_fig=True
+        )
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+        logger.info(f"Generating phenotype enrichment plots...")
+        for pheno in sumstat_paths_dict.keys():
+            fig = simba_plus.plotting.heritability.pheno_enrichment(
+                adata_G, pheno, return_fig=True
+            )
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+    logger.info(f"Created heritability report at {output_filename}.")
 
     adata_C.write(f"{args.adata_prefix}/adata_C{args.version_suffix}_annotated.h5ad")
     adata_G.write(f"{args.adata_prefix}/adata_G{args.version_suffix}_annotated.h5ad")
     adata_P.write(f"{args.adata_prefix}/adata_P{args.version_suffix}_annotated.h5ad")
     logger.info(
-        f"Generated heritability scores in {args.adata_prefix}/adata_{{C,G,P}}_annotated.h5ad"
+        f"Heritability annotated AnnDatas saved in {args.adata_prefix}/adata_{{C,G,P}}_annotated.h5ad"
     )

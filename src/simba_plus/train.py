@@ -242,6 +242,7 @@ def run(
         edgetype_specific=edgetype_specific,
         hsic=hsic,
         herit_loss=herit_loss,
+        herit_loss_lam=sumstats_lam,
         n_no_kl=n_no_kl,
         n_kl_warmup=n_kl_warmup,
         nll_scale=nll_scale,
@@ -312,7 +313,7 @@ def run(
                 rpvgae,
                 pldata,
                 min_lr=0.001,
-                max_lr=0.1,
+                max_lr=0.01,
                 num_training=30,
                 early_stop_threshold=None,
             )
@@ -572,7 +573,7 @@ def add_argument(parser):
         "--hidden-dims",
         type=int,
         default=50,
-        help="Dimensionality of hidden and latent embeddings",
+        help="Dimensionality of latent embeddings",
     )
     parser.add_argument(
         "--hsic-lam",

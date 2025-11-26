@@ -7,8 +7,8 @@ import argparse
 import simba_plus.load_data as load_data
 import simba_plus.train as train
 import simba_plus.evaluate as evaluate
+import simba_plus.post_training.factors as factors
 import simba_plus.heritability.create_report as create_heritability_report
-
 import simba_plus.predict as predict
 import simba_plus.train_xgboost as train_xgb
 
@@ -16,7 +16,9 @@ import simba_plus.train_xgboost as train_xgb
 def main():
     if len(sys.argv) < 2:
         print("Usage: simba+ <subcommand> [args]")
-        print("Available subcommands: load_data, train, eval, predict, train-xgb, heritability")
+        print(
+            "Available subcommands: load_data, train, eval, predict, train-xgb, heritability"
+        )
         sys.exit(1)
 
     parser = argparse.ArgumentParser(
@@ -35,13 +37,16 @@ def main():
     eval_parser = subparsers.add_parser("eval")
     eval_parser = evaluate.add_argument(eval_parser)
 
+    factor_parser = subparsers.add_parser("factors")
+    factor_parser = factors.add_argument(factor_parser)
+
     heritability_parser = subparsers.add_parser("heritability")
     heritability_parser = create_heritability_report.add_argument(heritability_parser)
 
     predict_parser = subparsers.add_parser("predict")
     predict_parser = predict.add_argument(predict_parser)
 
-    trainxgb_parser = subparsers.add_parser('train-xgb')
+    trainxgb_parser = subparsers.add_parser("train-xgb")
     trainxgb_parser = train_xgb.add_parser(trainxgb_parser)
 
     parsed_args = parser.parse_args()
@@ -53,6 +58,8 @@ def main():
         train.main(parsed_args)
     elif subcommand == "eval":
         evaluate.main(parsed_args)
+    elif subcommand == "factors":
+        factors.main(parsed_args)
     elif subcommand == "heritability":
         create_heritability_report.main(parsed_args)
     elif subcommand == "predict":

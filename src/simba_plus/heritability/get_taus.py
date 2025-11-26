@@ -47,6 +47,7 @@ def get_tau_z_dep(
     include_ov=False,
     ov_cov=None,
     annot_suffix="L2_1",
+    return_raw=False,
 ):
     index = pd.read_csv(result_path, sep="\t", index_col=0).index
     if ov_cov is None:
@@ -88,5 +89,6 @@ def get_tau_z_dep(
         )
     )
     tau_z = tau_mean / tau_std
-
+    if return_raw:
+        return tau_z, tau_mean, (tau_d.values / result["Coefficient_std_error"].values)
     return tau_z, tau_mean

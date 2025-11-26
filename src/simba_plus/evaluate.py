@@ -43,7 +43,7 @@ def decode(
         batch,
         z_dict,
         pos_edge_index_dict,
-        **model.aux_params(batch, {k: v.cpu() for k, v in pos_edge_index_dict.items()}),
+        **model.aux_params(batch, pos_edge_index_dict),
     )
     if batch_alledges is None:
         return pos_dist_dict
@@ -101,26 +101,27 @@ def get_gexp_metrics(
         {
             gexp_edge_type: torch.sort(index_dict[gexp_edge_type])[0],
         },
-        data,
+        data.edge_type_subgraph([gexp_edge_type]),
         negative_sampling_fold=negative_sampling_fold,
     )
-    gexp_dataset.sample_negative()
+    print("negative sampling")
+    gexp_dataset.sample_negative("cpu")
+    print("setting up dataloader")
     gexp_loader = DataLoader(
         gexp_dataset,
         batch_size=batch_size,
         collate_fn=collate,  # _graph,
         num_workers=num_workers,
     )
-
+    print("done setting up dataloader")
     with torch.no_grad():
         model.eval()
         means = []
         stds = []
         src_idxs = []
         dst_idxs = []
-
+        print("sampling batches")
         for gene_batch in tqdm(gexp_loader):
-            gene_batch = ToDevice(device)(gene_batch)
             pos_dist_dict = decode(
                 model,
                 gene_batch,  # gene_batch_alledges
@@ -140,6 +141,8 @@ def get_gexp_metrics(
         gexp_pred_mu = torch.cat(means)
         src_idx = torch.cat(src_idxs).cpu().numpy()
         dst_idx = torch.cat(dst_idxs).cpu().numpy()
+    # if data[gexp_edge_type].edge_dist == "NegativeBinomial":
+    #     gexp_pred_mu = gexp_pred_mu.log()
     test_dense_mat = scipy.sparse.coo_matrix(
         (
             gexp_pred_mu.detach().cpu().numpy(),
@@ -158,35 +161,35 @@ def get_gexp_metrics(
         .toarray()
         .astype(bool)
     )
-    pred_gene_mean = (
-        model.aux_params.bias_dict[make_key(dst, gexp_edge_type)].detach().cpu().numpy()
-    )
-    pred_cell_mean = (
-        model.aux_params.bias_dict[make_key(src, gexp_edge_type)].detach().cpu().numpy()
-    )
-    pred_gene_scale = (
-        model.aux_params.logscale_dict[make_key(dst, gexp_edge_type)].detach().cpu()
-    )
-    pred_cell_scale = (
-        model.aux_params.logscale_dict[make_key(src, gexp_edge_type)].detach().cpu()
-    )
-    if pred_gene_mean.ndim == 2:
-        pred_gene_mean = pred_gene_mean.mean(axis=0)
-    if pred_cell_mean.ndim == 2:
-        pred_cell_mean = pred_cell_mean.mean(axis=0)
-    if pred_gene_scale.ndim == 2:
-        pred_gene_scale = pred_gene_scale.mean(axis=0)
-    if pred_cell_scale.ndim == 2:
-        pred_cell_scale = pred_cell_scale.mean(axis=0)
-    pred_gene_scale = pred_gene_scale.exp().numpy()
-    pred_cell_scale = pred_cell_scale.exp().numpy()
+    # pred_gene_mean = (
+    #     model.aux_params.bias_dict[make_key(dst, gexp_edge_type)].detach().cpu().numpy()
+    # )
+    # pred_cell_mean = (
+    #     model.aux_params.bias_dict[make_key(src, gexp_edge_type)].detach().cpu().numpy()
+    # )
+    # pred_gene_scale = (
+    #     model.aux_params.logscale_dict[make_key(dst, gexp_edge_type)].detach().cpu()
+    # )
+    # pred_cell_scale = (
+    #     model.aux_params.logscale_dict[make_key(src, gexp_edge_type)].detach().cpu()
+    # )
+    # if pred_gene_mean.ndim == 2:
+    #     pred_gene_mean = pred_gene_mean.mean(axis=0)
+    # if pred_cell_mean.ndim == 2:
+    #     pred_cell_mean = pred_cell_mean.mean(axis=0)
+    # if pred_gene_scale.ndim == 2:
+    #     pred_gene_scale = pred_gene_scale.mean(axis=0)
+    # if pred_cell_scale.ndim == 2:
+    #     pred_cell_scale = pred_cell_scale.mean(axis=0)
+    # pred_gene_scale = pred_gene_scale.exp().numpy()
+    # pred_cell_scale = pred_cell_scale.exp().numpy()
 
     res_out = test_dense_mat.toarray()
-    res_out_norm = (
-        (res_out - pred_gene_mean - pred_cell_mean[:, None])
-        / (pred_gene_scale + 1e-6)
-        / (pred_cell_scale[:, None] + 1e-6)
-    )
+    # res_out_norm = (
+    #     (res_out - pred_gene_mean - pred_cell_mean[:, None])
+    #     / (pred_gene_scale + 1e-6)
+    #     / (pred_cell_scale[:, None] + 1e-6)
+    # )
     # res_out_norm = (
     #     (res_out - gexp_mean - cell_mean[:, None])
     #     / (gexp_std + 1e-6)
@@ -194,23 +197,23 @@ def get_gexp_metrics(
     # )
     corrs = []
     spearman_corrs = []
-    for i in range(res_out_norm.shape[1]):
-        if gexp_mean[i] <= 5:
+    for i in range(res_out.shape[1]):
+        if gexp_mean[i] <= 10:
             continue
         nonzero_idx = mask[:, i]
         if nonzero_idx.sum() == 0:
             continue
-        if len(np.unique(gexp_norm[nonzero_idx, i])) == 1:
+        if len(np.unique(gexp_mat[nonzero_idx, i])) == 1:
             continue
 
         corrs.append(
-            np.corrcoef(res_out_norm[:, i][nonzero_idx], gexp_norm[:, i][nonzero_idx])[
+            np.corrcoef(res_out[:, i][nonzero_idx], gexp_mat[:, i][nonzero_idx])[
                 0, 1
             ].item()
         )
         spearman_corrs.append(
             spearmanr(
-                res_out_norm[:, i][nonzero_idx], gexp_norm[:, i][nonzero_idx]
+                res_out[:, i][nonzero_idx], gexp_mat[:, i][nonzero_idx]
             ).correlation
         )
     return {
@@ -236,10 +239,10 @@ def get_accessibility_metrics(
     acc_edge_type = ("cell", "has_accessible", "peak")
     acc_dataset = CustomNSMultiIndexDataset(
         {acc_edge_type: index_dict[acc_edge_type]},
-        data,
+        data.edge_type_subgraph([acc_edge_type]),
         negative_sampling_fold=negative_sampling_fold,
     )
-    acc_dataset.sample_negative()
+    acc_dataset.sample_negative("cpu")
     acc_loader = DataLoader(
         acc_dataset,
         batch_size=batch_size,
@@ -294,6 +297,7 @@ def evaluate_model(
 ):
     data = torch.load(data_path, weights_only=False)
     data.generate_ids()
+    logger.info(f"Data loaded to {data['cell'].n_id.device}: {data}")
     # data.to(device)
     if index_path is None:
         index_path = f"{data_path.split('.dat')[0]}_data_idx.pkl"
@@ -302,9 +306,7 @@ def evaluate_model(
     index_dict = {tuple(k.split("__")): v for k, v in data_idx[eval_split].items()}
     metric_dict = {}
 
-    model = LightningProxModel.load_from_checkpoint(model_path, weights_only=True).to(
-        device
-    )
+    model = LightningProxModel.load_from_checkpoint(model_path, weights_only=True)
     logger.info(f"Loaded model from {model_path}.")
     model.eval()
     if ("cell", "expresses", "gene") in index_dict.keys():

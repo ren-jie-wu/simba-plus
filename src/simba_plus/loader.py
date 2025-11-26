@@ -64,12 +64,12 @@ class CustomNSMultiIndexDataset(Dataset):
                     edge_type
                 ]
 
-    def sample_negative(self):
+    def sample_negative(self, device=None):
         """Add true negative edges' index"""
         t1 = time.time()
-        torch_geometric.seed_everything(self.setup_count)
         self.setup_count += 1
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         torch_geometric.seed.seed_everything(self.setup_count)
         self.setup_count += 1
         self.full_data = copy(self.data)
@@ -151,8 +151,7 @@ class CustomNSMultiIndexDataset(Dataset):
 def collate(batches):
     graph_batch = {}
     full_data = batches[0][2]
-    # pkl.dump(full_data, open(".tmp_debug_full_data.pkl", "wb"))
-    edge_types, edge_indices, _ = zip(*batches)
+
     for batch in batches:
         edge_type, edge_index, _ = batch
         if edge_type not in graph_batch:

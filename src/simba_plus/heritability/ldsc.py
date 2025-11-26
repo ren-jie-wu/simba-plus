@@ -12,6 +12,12 @@ def run_ldsc_l2(
     nprocs: int = 10,
     logger=None,
 ):
+    def _log(msg):
+        if logger is None:
+            print(msg)
+        else:
+            logger.info(msg)
+
     if annot_type == "sparse":
         suffix = "annot.npz"
     else:
@@ -24,13 +30,18 @@ def run_ldsc_l2(
     ldscdir = f"{script_dir}/../../ldsc/"
     bfile = f"{filedir}/1000G_Phase3_plinkfiles/1000G_EUR_Phase3_plink/1000G.EUR.QC"
     snplist = f"{filedir}/hm3_no_MHC.list.txt"
-
+    if not rerun and all(
+        os.path.exists(f"{annotfile_prefix}.{chrom}.l2.ldscore.gz")
+        for chrom in range(1, 23)
+    ):
+        _log("LDSC L2 scores already exist, skipping run.")
+        return
     for chrom in range(1, 23):
         out_path = os.path.join(
             f"{annotfile_prefix}.{chrom}",
         )
         if (not rerun) and os.path.exists(f"{out_path}.l2.ldscore.gz"):
-            print(f"Skipping existing LDSC output for {out_path}")
+            _log(f"Skipping existing LDSC output for {out_path}")
             continue
         cmd = [
             "python",
@@ -89,6 +100,12 @@ def run_ldsc_h2(
     nprocs=10,
     logger=None,
 ):
+    def _log(msg):
+        if logger is None:
+            print(msg)
+        else:
+            logger.info(msg)
+
     simba_plus.datasets._datasets.heritability(logger=logger)
     processes = []
     os.makedirs(out_dir, exist_ok=True)
@@ -114,7 +131,7 @@ def run_ldsc_h2(
             )
         out_path = os.path.join(out_dir, sumstat_basename)
         if (not rerun) and os.path.exists(f"{out_path}.results"):
-            print(f"Skipping existing LDSC h2 output for {sumstat_basename}")
+            _log(f"Skipping existing LDSC h2 output for {sumstat_basename}")
             continue
         cmd = [
             "python",

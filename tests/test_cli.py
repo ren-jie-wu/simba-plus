@@ -33,3 +33,13 @@ def test_train_help():
 def test_eval_help():
     proc = _run_subcommand(["eval", "-h"])
     assert proc.returncode == 0, proc.stderr.decode()
+
+
+def test_factors_help():
+    proc = _run_subcommand(["factors", "-h"])
+    assert proc.returncode == 0, proc.stderr.decode()
+
+
+def test_heritability_help():
+    proc = _run_subcommand(["heritability", "-h"])
+    assert proc.returncode == 0, proc.stderr.decode()

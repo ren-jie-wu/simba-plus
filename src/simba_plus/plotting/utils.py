@@ -22,6 +22,7 @@ def enrichment(
     figsize=(10, 15),
 ):
     scatterplots = []
+    len_enrichments = []
     fig, ax = plt.subplots(
         len(gene_sets), 1, figsize=figsize, gridspec_kw={"hspace": 0.5}
     )
@@ -48,6 +49,7 @@ def enrichment(
                 edgecolors="black",
             )
         )  # marker="-log10(FDR)", palette="Reds", edgecolor="black")
+        len_enrichments.append(len(pdf))
         ax[i].set_title(f"{title_prefix}{enrichment_key}\n{gene_set}")
         ax[i].invert_yaxis()
         ax[i].set_box_aspect(1.5)
@@ -57,6 +59,8 @@ def enrichment(
         # cax = divider.append_axes("right", size="5%", pad=1)
     plt.tight_layout()
     for i, scatter in enumerate(scatterplots):
+        if len_enrichments[i] == 0:
+            continue
         handles, labels = scatterplots[i].legend_elements(
             prop="sizes",
             num=3,

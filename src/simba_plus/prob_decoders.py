@@ -200,11 +200,9 @@ class NegativeBinomialDataDecoder(ProximityDecoder):
         dst_std=None,
         # b: torch.Tensor, l: Optional[torch.Tensor]
     ) -> D.Normal:
-        scale = torch.exp(src_logscale + dst_logscale)
+        scale = F.softplus(src_logscale) * F.softplus(dst_logscale)
         cos = torch.nn.CosineSimilarity()
-        mean_logit = torch.clamp(
-            scale * cos(u, v) + src_bias + dst_bias, min=-float("inf"), max=88
-        )
+        mean_logit = scale * cos(u, v) + src_bias + dst_bias
         loc = torch.exp(mean_logit)
         # std = torch.exp((src_std + dst_std).clamp(MIN_LOGSTD, MAX_LOGSTD))
         std = torch.exp(dst_std + src_std)

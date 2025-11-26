@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import gseapy as gp
+from json import JSONDecodeError
 
 
 def run_enrichr(
@@ -31,19 +32,34 @@ def run_enrichr(
         )
         top_n = max(min_genes, kn.knee)
         n_genes = top_n
-    pre_res = gp.enrichr(
-        gene_list[:top_n].index.tolist(),
-        gene_sets=gene_set,
-        organism="Human",
-        outdir=None,
-        background=gene_list.index.tolist(),
-    )
-    res2d = pre_res.res2d
-    # res2d = res2d.loc[~res2d["Odds Ratio"].map(np.isinf)]
-    sig_results = (
-        res2d[res2d["Adjusted P-value"] < plot_adjp_thres]
-        .sort_values("Adjusted P-value", ascending=True)
-        .reset_index()
-    )
+    try:
+        pre_res = gp.enrichr(
+            gene_list[:top_n].index.tolist(),
+            gene_sets=gene_set,
+            organism="Human",
+            outdir=None,
+            background=gene_list.index.tolist(),
+        )
+        res2d = pre_res.res2d
+        # res2d = res2d.loc[~res2d["Odds Ratio"].map(np.isinf)]
+        sig_results = (
+            res2d[res2d["Adjusted P-value"] < plot_adjp_thres]
+            .sort_values("Adjusted P-value", ascending=True)
+            .reset_index()
+        )
+    except JSONDecodeError:
+        sig_results = pd.DataFrame(
+            columns=[
+                "Gene_set",
+                "Term",
+                "P-value",
+                "Adjusted P-value",
+                "Old P-value",
+                "Old adjusted P-value",
+                "Odds Ratio",
+                "Combined Score",
+                "Genes",
+            ]
+        )
 
     return sig_results, n_genes
